@@ -103,7 +103,9 @@ def test_edep_plus_labl_labels(lucid_data_root):
     tpidx = d['labl']['track']['particle_idx']
     cats = d['labl']['particle']['category']
     expected_pidx = tpidx[seg['track_idx']]
-    expected_seg = cats[expected_pidx]
+    valid = (expected_pidx >= 0) & (expected_pidx < len(cats))
+    expected_seg = np.full_like(expected_pidx, -1)
+    expected_seg[valid] = cats[expected_pidx[valid]]
     assert np.array_equal(seg['particle_idx'], expected_pidx)
     assert np.array_equal(seg['segment'], expected_seg)
 
@@ -120,7 +122,7 @@ def test_all_four_modalities(lucid_data_root):
     seg_pids = set(np.unique(d['edep']['particle_idx']).tolist())
     n_particles = d['labl']['particle']['category'].shape[0]
     assert inst_pids <= set(range(n_particles))
-    assert seg_pids <= set(range(n_particles))
+    assert seg_pids - {-1} <= set(range(n_particles))
 
 
 # ---------------------------------------------------------------------------

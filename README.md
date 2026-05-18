@@ -4,63 +4,178 @@ Multimodal detector dataset loaders for particle-imaging ML workflows.
 
 Reads simulation output produced by:
 
-- **JAXTPC** — Liquid Argon TPC simulation (`seg` / `sensor` / `inst` / `labl` HDF5)
-- **LUCiD** — Water Cherenkov / PhotonSim simulation (`seg` / `sensor` / `inst` / `labl` HDF5, `format_version >= 3`)
+- **JAXTPC** — Liquid Argon TPC simulation (`edep` / `sensor` / `hits` / `labl` HDF5)
+- **LUCiD** — Water Cherenkov / PhotonSim simulation (`edep` / `sensor` / `hits` / `labl` HDF5, `format_version >= 3`)
 
 Datasets inherit from `torch.utils.data.Dataset` and return nested
 `dict[str, dict[str, np.ndarray]]` samples (one sub-dict per modality).
-No transforms, no test-time augmentation, no framework glue — that
-belongs in the downstream training framework (e.g. pimm).
 
-## Install (local editable)
+## Quick start
+
+### Install
 
 ```bash
 pip install -e /path/to/pimm-data
 ```
 
-## Quick start
+### Load a JAXTPC dataset
 
 ```python
-from pimm_data import JAXTPCDataset, LUCiDDataset
+from pimm_data import JAXTPCDataset
+
+ds = JAXTPCDataset(data_root="/path/to/jaxtpc_data", split="", modalities=("edep", "labl"))
+sample = ds.get_data(0)          # numpy arrays, no transforms
+print(sample["edep"].keys())     # coord, energy, volume_id, segment, instance, ...
+```
+
+### Load a LUCiD dataset
+
+```python
+from pimm_data import LUCiDDataset
+
+ds = LUCiDDataset(data_root="/path/to/wc_data", modalities=("sensor",))
+sample = ds.get_data(0)
+print(sample["sensor"].keys())   # coord, energy, time, sensor_idx
+```
+
+### Training-ready example
+
+```python
+from torch.utils.data import DataLoader
+from pimm_data import JAXTPCDataset, collate_fn
 
 ds = JAXTPCDataset(
-    data_root="/path/to/jaxtpc_dataset",
-    modalities=("seg", "labl"),
-    label_key="pdg",          # or "cluster" / "interaction" / "ancestor"
+    data_root="/path/to/jaxtpc_data",
+    split="",
+    modalities=("edep", "labl"),
+    label_key="pdg",
+    transform=[
+        dict(type="ApplyToStream", stream="edep", transforms=[
+            dict(type="RemapSegment", scheme="motif_5cls"),
+            dict(type="GridSample", grid_size=0.5, mode="train",
+                 return_grid_coord=True),
+        ]),
+        dict(type="Collect", stream="edep",
+             keys=("coord", "grid_coord", "segment"),
+             feat_keys=("coord", "energy")),
+    ],
 )
-sample = ds[0]               # nested dict
-print(sample['seg'].keys())  # coord, energy, segment, instance, ...
-
-wc = LUCiDDataset(
-    data_root="/path/to/wc_dataset",
-    modalities=("sensor", "inst", "labl"),
-)
-sample = wc[0]
-print(sample['inst'].keys())  # coord, energy, instance, segment, ...
+loader = DataLoader(ds, batch_size=4, num_workers=4,
+                    collate_fn=collate_fn, pin_memory=True)
+batch = next(iter(loader))
 ```
+
+> **`transform` takes a plain list of dicts**, not a `Compose` object.
+> `Compose` wrapping is handled internally.
+
+> **`get_data(idx)`** returns raw numpy arrays with no transforms.
+> **`ds[idx]`** applies the full transform pipeline and returns tensors.
+
+> **`split` parameter:** JAXTPC defaults to `split='train'`, looking in
+> `data_root/edep/train/`. LUCiD defaults to `split=''`. If your files
+> sit directly in `data_root/edep/` with no split subdirectory, pass
+> `split=''`.
+
+> **`label_key`** controls which labl column populates `segment`.
+> Options: `'pdg'` (default), `'cluster'`, `'interaction'`, `'ancestor'`.
+> Use `RemapSegment` to map raw values to task-specific class indices.
+
+---
+
+## Naming conventions
+
+### Modality names (top-level dict keys, directory names, file tags)
+
+| Modality | Meaning | Why this name |
+|----------|---------|---------------|
+| `edep`   | 3D energy deposits (one row per Geant4 simulation step) | Standard HEP abbreviation. |
+| `sensor` | Aggregated detector readout (pixels, wires, or PMTs) | What the detector measures. |
+| `hits`   | Per-particle charge attribution at sensor elements | Natural detector term ("PMT hits" in WC, "track hits" in TPC). |
+| `labl`   | Metadata dimension tables (PDG, interaction, ancestry) | Short for "labels." |
+
+These appear as directory names (`edep/`), HDF5 file tags
+(`sim_edep_0000.h5`), and top-level keys (`data['edep']`).
+
+### ML column names (per-point arrays inside a modality sub-dict)
+
+| Column     | Meaning | Lives inside |
+|------------|---------|-------------|
+| `segment`  | Semantic segmentation class ID per point | `data['edep']['segment']`, `data['hits']['segment']` |
+| `instance` | Instance segmentation ID per point | `data['edep']['instance']`, `data['hits']['instance']` |
+
+`segment` and `instance` are **not** modalities — they are per-point
+label columns attached when `labl` is in the modalities tuple.
+
+### Foreign-key arrays
+
+| FK array | Meaning | Scope |
+|----------|---------|-------|
+| `deposit_to_track` | Edep deposit → track ID | Per volume, in `labl` |
+| `deposit_to_group` | Edep deposit → hits group ID | Per volume, in `bridges` |
+| `group_to_track`   | Hits group → track ID | Per volume, in `bridges` |
+
+All are suffixed `_v{N}` for multi-volume detectors (e.g. `deposit_to_group_v0`).
+
+### The `bridges` dict
+
+`bridges` appears as a top-level key only when `hits` is loaded
+(JAXTPC only). It holds the FK arrays linking edep, hits, and labl:
+
+```python
+data['bridges'] = {
+    'group_to_track_v0':   (G0,),   # hits group_id → track_id
+    'deposit_to_group_v0': (N_v0,), # edep row → hits group_id
+    'qs_fractions_v0':     ...,     # charge-sharing fractions
+    # ... _v1, _v2, etc.
+}
+```
+
+---
 
 ## Data layout
 
-Both datasets expect `data_root` to be a directory with one
-subdirectory per modality, each holding sharded HDF5 files named
-`{dataset_name}_{modality}_{shard}.h5`.
+Each dataset expects sharded HDF5 files organized by modality:
+
+```
+data_root / [modality_subdir/] / [split/] / {dataset_name}_{modality}_{shard:04d}.h5
+```
+
+**JAXTPC** (`dataset_name='sim'`):
 
 ```
 data_root/
-    seg/     {dataset_name}_seg_0000.h5     {dataset_name}_seg_0001.h5    ...
-    sensor/  {dataset_name}_sensor_0000.h5  {dataset_name}_sensor_0001.h5 ...
-    inst/    {dataset_name}_inst_0000.h5    {dataset_name}_inst_0001.h5   ...
-    labl/    {dataset_name}_labl_0000.h5    {dataset_name}_labl_0001.h5   ...
+  edep/     sim_edep_0000.h5    sim_edep_0001.h5    ...
+  sensor/   sim_sensor_0000.h5  ...
+  hits/     sim_hits_0000.h5    ...
+  labl/     sim_labl_0000.h5    ...
 ```
 
-Readers are index-synchronized by event ordinal across modalities —
-`seg/` event 0 and `sensor/` event 0 refer to the same physics event.
-Modality subdirectories you don't request can be absent. If `data_root`
-itself contains the `.h5` files (no modality subdirs), the readers fall
-back to searching `data_root` directly.
+**LUCiD** (`dataset_name='wc'`):
 
-`dataset_name` is the file prefix: `'sim'` is JAXTPC's default, `'wc'`
-is LUCiD's.
+```
+data_root/
+  edep/     wc_edep_0000.h5     ...
+  sensor/   wc_sensor_0000.h5   ...
+  hits/     wc_hits_0000.h5     ...
+  labl/     wc_labl_0000.h5     ...
+```
+
+**Path resolution rules:**
+
+1. **Modality subdirectory** — `data_root/modality/` is checked first.
+   If it doesn't exist, the reader falls back to `data_root` directly.
+
+2. **Split subdirectory** — Readers glob `reader_root/split/{name}_{mod}_*.h5`
+   first, falling back to `reader_root/{name}_{mod}_*.h5` if empty.
+   `split=''` (LUCiD default) skips the split subdirectory entirely.
+
+3. **Only requested modalities must be present** — Directories for
+   modalities not in your `modalities` tuple are never accessed.
+
+Readers are index-synchronized by event ordinal — `edep/` event 0 and
+`sensor/` event 0 refer to the same physics event.
+
+---
 
 ## Modality combinations
 
@@ -68,232 +183,345 @@ Each modality produces a sub-dict at a top-level key of the same name.
 
 | Modality | Contains | Point-cloud dim |
 |---|---|---|
-| `seg`    | 3D truth deposits (one row per Geant4 step) | 3D |
-| `sensor` | Raw sparse detector response (pixels / PMT hits) | 2D (JAXTPC wire), 3D (JAXTPC pixel, LUCiD) |
-| `inst`   | Per-instance decomposition of `sensor` (same pixels/PMTs split by source particle) | same as `sensor` |
-| `labl`   | Dimension tables: `per_event`, `per_particle`, `per_track` (JAXTPC: `v{N}` per volume) | — |
+| `edep`   | 3D truth deposits (one row per Geant4 step) | 3D |
+| `sensor` | Raw sparse detector response | 2D (wire), 3D (pixel, PMT) |
+| `hits`   | Per-particle decomposition of `sensor` | same as `sensor` |
+| `labl`   | Dimension tables: per-track metadata | — |
 
-`labl` has no point cloud of its own. It's joined onto an
-instance-bearing modality (`seg` or `inst`) to attach `segment` and
-`instance` columns. Two combinations are therefore rejected at
-construction time:
+`labl` has no point cloud — it attaches `segment` and `instance`
+columns to an instance-bearing modality (`edep` or `hits`). Two
+combinations are rejected:
 
-- `('labl',)` — labl alone has nothing to join against.
-- `('sensor', 'labl')` — `sensor` is aggregated across particles, so
-  per-particle labels can't be attached row-wise. Add `inst` (or `seg`)
-  to the tuple.
+- `('labl',)` — nothing to join against.
+- `('sensor', 'labl')` — `sensor` is aggregated, no per-particle info.
+
+---
 
 ## Output schema
 
-A sample is a **nested dict**. Top level has one key per active
-modality, plus `name` and `split`. Each modality's sub-dict is **flat**
-— every listed key is a direct sibling, nothing is nested further.
-
-> Naming collision, up front: `seg` the *modality* (a point cloud of 3D
-> particle-track segments) is different from `segment` the *column*
-> (pimm's convention for a per-point semantic class label). `segment`
-> is a `(N,)` array that sits alongside `coord`, `energy`, and the rest
-> — it's not a sub-dict.
-
-LUCiD and JAXTPC have genuinely different columns per modality, so each
-is documented separately.
-
-### LUCiD sub-dicts
+### Top-level structure
 
 ```python
-data['seg'] = {
-    'coord':        (N, 3),    # midpoint of Geant4 step
-    'energy':       (N, 1),    # edep
-    'time':         (N, 1),
-    'track_idx':    (N,),      # FK → labl.track
-    # include_physics=True (default):
-    'direction':    (N, 3),
-    'beta_start':   (N, 1),
-    'n_cherenkov':  (N, 1),
-    # present only when 'labl' is also in modalities:
-    'particle_idx': (N,),      # = labl.track.particle_idx[track_idx]
-    'instance':     (N,),      # = particle_idx
-    'segment':      (N,),      # = labl.particle.category[particle_idx]
-}
-
-data['sensor'] = {
-    'coord':       (H, 3),     # PMT xyz, indexed via sensor_positions[sensor_idx]
-    'energy':      (H, 1),     # post-smearing PE
-    'time':        (H, 1),
-    'sensor_idx':  (H,),
-}
-
-data['inst'] = {
-    'coord':        (E, 3),    # same PMT geometry as sensor
-    'energy':       (E, 1),    # per-particle PE (pre-smearing)
-    'time':         (E, 1),
-    'sensor_idx':   (E,),
-    'particle_idx': (E,),      # FK → labl.particle
-    'instance':     (E,),      # = particle_idx
-    # present only when 'labl' is also in modalities:
-    'segment':      (E,),      # = labl.particle.category[particle_idx]
-}
-
-data['labl'] = {
-    'event':    {'t0': (), 'overall_containment': ()},
-    'particle': {'category':              (P,),
-                 'containment':           (P,),
-                 'ancestor_particle_idx': (P,),
-                 'genealogy_data':        (G,),
-                 'genealogy_offsets':     (P+1,),
-                 'ext_genealogy_data':    (...,),
-                 'ext_genealogy_offsets': (P+1,)},
-    'track':    {'track_id':              (T,),
-                 'pdg':                   (T,),
-                 'parent_id':             (T,),
-                 'particle_idx':          (T,),  # FK → labl.particle
-                 'ancestor':              (T,),  # root ancestor track_id
-                 'ancestor_particle_idx': (T,),
-                 'interaction':           (T,),
-                 'initial_energy':        (T,),
-                 'n_cherenkov':           (T,)},
-}
+data = ds.get_data(idx)
+# {
+#     'name': str, 'split': str,
+#     'edep':    {...},    # when 'edep' in modalities
+#     'sensor':  {...},    # when 'sensor' in modalities
+#     'hits':    {...},    # when 'hits' in modalities
+#     'labl':    {...},    # when 'labl' in modalities
+#     'bridges': {...},    # JAXTPC only, when 'hits' in modalities
+# }
 ```
 
 ### JAXTPC sub-dicts
 
-JAXTPC is volume-partitioned with two readout types:
-
-- **wire** (U/V/Y planes, 2D `wire × time` per plane)
-- **pixel** (single `Pixel` plane per volume, 3D `py × pz × time`)
-
-`sensor` and `inst` are point clouds merged across planes, with per-plane
-raw arrays kept in a nested `raw` dict for transforms that need them.
-The readout type is auto-detected from the HDF5 `/config.readout_type`
-attribute and surfaced as `data['sensor']['readout_type']` /
-`data['inst']['readout_type']` (both always equal). `coord` shape,
-`planes` labels, and `raw` per-plane column names all follow the readout
-type — see below.
+JAXTPC supports two readout types (auto-detected from HDF5):
+**wire** (U/V/Y planes, coord is `(M, 2)`) and **pixel** (coord is `(M, 3)`).
 
 ```python
-data['seg'] = {
-    'coord':     (N, 3),
-    'energy':    (N, 1),
-    'volume_id': (N, 1),       # which TPC volume each deposit came from
+data['edep'] = {
+    'coord':     (N, 3) float32,
+    'energy':    (N, 1) float32,
+    'volume_id': (N, 1) int32,
     # include_physics=True (default):
     'dx': (N, 1), 'theta': (N, 1), 'phi': (N, 1),
     'charge': (N, 1), 'photons': (N, 1), 't0_us': (N, 1),
     # present only when 'labl' is also in modalities:
-    'instance': (N,),          # = segment_to_track (raw Geant4 track_id)
-    'segment':  (N,),          # = track_{label_key} (e.g. track_pdg)
+    'instance': (N,) int32,     # = raw Geant4 track_id
+    'segment':  (N,) int32,     # = track_{label_key} value
 }
 
 data['sensor'] = {
-    'coord':         (M, D),        # D=2 for wire (wire,time), D=3 for pixel (py,pz,time)
-    'energy':        (M, 1),
-    'plane_id':      (M, 1),
-    'planes':        [str, ...],    # plane labels in plane_id order
-                                    #   wire:  'volume_{v}_{U|V|Y}'
-                                    #   pixel: 'volume_{v}_Pixel'
-    'readout_type':  'wire' | 'pixel',
-    'raw': {plane_label: {...}},    # wire:  {'wire', 'time', 'value'}
-                                    # pixel: {'py', 'pz', 'time', 'value'}
+    'coord':        (M, D) float32,    # D=2 wire, D=3 pixel
+    'energy':       (M, 1) float32,
+    'plane_id':     (M, 1) int32,
+    'planes':       [str, ...],        # plane labels in plane_id order
+    'readout_type': 'wire' | 'pixel',
+    'raw': {plane_label: {...}},       # per-plane arrays before merge
 }
 
-data['inst'] = {
-    'coord':         (E, D),        # D=2 for wire, D=3 for pixel
-    'energy':        (E, 1),
-    'plane_id':      (E, 1),
-    'planes':        [str, ...],
-    'readout_type':  'wire' | 'pixel',
-    'raw': {plane_label: {...}},    # wire:  {'wire', 'time', 'group_id', 'charge'}
-                                    # pixel: {'py', 'pz', 'time', 'group_id', 'charge'}
-    'instance': (E,),               # = group_id
+data['hits'] = {
+    'coord':        (E, D) float32,
+    'energy':       (E, 1) float32,
+    'plane_id':     (E, 1) int32,
+    'instance':     (E,) int32,        # = group_id
+    'planes':       [str, ...],
+    'readout_type': 'wire' | 'pixel',
+    'raw': {plane_label: {...}},
     # present only when 'labl' is also in modalities:
-    'segment':  (E,),               # = track_{label_key}, joined via group_to_track
+    'segment':      (E,) int32,        # = track_{label_key} via group_to_track
 }
 
 data['labl'] = {              # keyed by volume
-    'v0': {'track_ids':        (T0,),  # unique track_ids in this volume
-           'track_pdg':        (T0,),
-           'track_cluster':    (T0,),
-           'track_interaction':(T0,),
-           'track_ancestor':   (T0,),
-           'segment_to_track': (N_v0,)},  # seg deposit → track_id (row-aligned)
+    'v0': {'track_ids': (T0,), 'deposit_to_track': (N_v0,),
+           'track_pdg': (T0,), 'track_cluster': (T0,),
+           'track_interaction': (T0,), 'track_ancestor': (T0,)},
     'v1': {...},
 }
 
-data['bridges'] = {           # only when 'inst' is loaded
-    'group_to_track_v0':   (G0,),   # inst group_id → track_id
-    'segment_to_group_v0': (N_v0,), # seg deposit → group_id
+data['bridges'] = {           # only when 'hits' is loaded
+    'group_to_track_v0':   (G0,),
+    'deposit_to_group_v0': (N_v0,),
     'qs_fractions_v0':     ...,
-    # ...and _v1, _v2, etc.
 }
 ```
 
-**Note on `instance` semantics.** LUCiD puts `instance = particle_idx`
-(one instance per physics particle, coarsening over Geant4 tracks that
-belong to the same particle). JAXTPC puts `instance = track_id` (raw
-Geant4 track IDs) for seg, and `instance = group_id` (inst's native
-grouping key) for inst. If a task needs one convention across both
-datasets, remap in a transform.
-
-**sensor vs inst.** `sensor` is the detector-level response (post
-smearing / noise, when enabled). `inst` is the particle-level
-decomposition (pre-smearing truth). You cannot assume they align
-row-for-row: when smearing is on, `sensor` can carry hits that have
-no counterpart in `inst` — those hits have no particle of origin and
-should be treated as background (e.g. `ignore_index`) by downstream
-training.
-
-### LUCiD: ancestor-level grouping
-
-The LUCiD labl reader precomputes `ancestor_particle_idx` on both
-`per_particle` and `per_track`, so switching from particle-level to
-ancestor-level instance segmentation is one lookup:
+### LUCiD sub-dicts
 
 ```python
-# inst → ancestor-level instance
-data['inst']['instance'] = (
-    data['labl']['particle']['ancestor_particle_idx']
-    [data['inst']['particle_idx']]
-)
-# seg → ancestor-level instance (joins through per_track)
-data['seg']['instance'] = (
-    data['labl']['track']['ancestor_particle_idx']
-    [data['seg']['track_idx']]
-)
+data['edep'] = {
+    'coord':       (N, 3) float32,    # midpoint of Geant4 step
+    'energy':      (N, 1) float32,
+    'time':        (N, 1) float32,
+    'track_idx':   (N,) int32,        # FK → labl.track
+    # include_physics=True (default):
+    'direction':   (N, 3), 'beta_start': (N, 1), 'n_cherenkov': (N, 1),
+    # present when 'labl' in modalities:
+    'particle_idx': (N,), 'instance': (N,), 'segment': (N,),
+}
+
+data['sensor'] = {
+    'coord':      (H, 3) float32,    # PMT positions
+    'energy':     (H, 1) float32,    # post-smearing PE
+    'time':       (H, 1) float32,
+    'sensor_idx': (H,) int32,
+}
+
+data['hits'] = {
+    'coord':        (E, 3) float32,
+    'energy':       (E, 1) float32,
+    'time':         (E, 1) float32,
+    'sensor_idx':   (E,) int32,
+    'particle_idx': (E,) int32,
+    'instance':     (E,) int32,       # = particle_idx
+    # present when 'labl' in modalities:
+    'segment':      (E,) int32,       # = labl.particle.category
+}
+
+data['labl'] = {
+    'event':    {'t0': (), 'overall_containment': ()},
+    'particle': {'category': (P,), 'containment': (P,),
+                 'ancestor_particle_idx': (P,), ...},
+    'track':    {'track_id': (T,), 'pdg': (T,), 'parent_id': (T,),
+                 'particle_idx': (T,), 'ancestor': (T,),
+                 'ancestor_particle_idx': (T,), ...},
+}
 ```
 
-Both remaps share the same `particle_idx` index space, so `inst` and
-`seg` stay joinable after the swap.
+### Instance and segment semantics
 
-## Using with transforms
+**Instance** has different physical meaning per dataset:
 
-Transforms from pimm (and `pimm_data.transform`) assume flat keys
-(`coord`, `segment`, …). Two adapters bridge the nested schema:
+| Dataset | Modality | `instance` = |
+|---------|----------|-------------|
+| JAXTPC  | `edep`   | `track_id` (raw Geant4 track ID) |
+| JAXTPC  | `hits`   | `group_id` (hits' native grouping) |
+| LUCiD   | both     | `particle_idx` (FK into labl.particle) |
 
-- **`ApplyToStream(stream=..., transforms=[...])`** — dispatches a
-  sub-pipeline into one sub-dict. Inner transforms see a plain flat
-  dict and are unmodified.
-- **`Collect(stream=..., keys=..., feat_keys=...)`** — pulls keys from
-  `data_dict[stream]` instead of the top level, and passes
-  `name` / `split` through automatically.
+If a task needs uniform instance convention, remap in a transform.
+
+**Segment** carries raw label values controlled by `label_key`:
+
+| Dataset | Source | Raw values |
+|---------|--------|------------|
+| JAXTPC  | `track_{label_key}` | PDG codes (default), cluster IDs, etc. |
+| LUCiD   | `labl.particle.category` | Detector-specific category integers |
+
+Use `RemapSegment` to map raw values to dense class indices:
 
 ```python
-from pimm_data.transform import Compose
+dict(type='RemapSegment', scheme='motif_5cls')
+```
 
-transform = Compose([
-    dict(type='ApplyToStream', stream='seg', transforms=[
+---
+
+## Transform pipeline
+
+The dataset returns a nested dict → transforms process it →
+`Collect` extracts a flat dict for the model.
+
+```
+get_data()  →  ApplyToStream(stream='edep', transforms=[...])  →  Collect(stream='edep', ...)
+nested dict       augments edep sub-dict (numpy)                    flat dict (tensors)
+```
+
+### ApplyToStream
+
+Dispatches transforms to a specific modality sub-dict. Inner transforms
+operate on numpy. If the stream is missing, the transform is a no-op
+(pass `required=True` to raise instead).
+
+```python
+dict(type='ApplyToStream', stream='edep', transforms=[
+    dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
+    dict(type='GridSample', grid_size=0.001, mode='train',
+         return_grid_coord=True),
+])
+```
+
+### Collect
+
+Terminal transform. Extracts keys from a stream, auto-converts numpy
+to torch tensors, and builds the `offset` key for batching.
+
+```python
+dict(type='Collect', stream='edep',
+     keys=('coord', 'grid_coord', 'segment'),
+     feat_keys=('coord', 'energy'))
+# Output: {coord, grid_coord, segment, feat, offset, name, split}
+```
+
+`ToTensor` is **not needed** — `Collect` handles tensor conversion.
+This also enables efficient `DataLoader` parallelism (see below).
+
+### Practical configs
+
+**SSL on 3D edep (no labels):**
+
+```python
+transform=[
+    dict(type='ApplyToStream', stream='edep', transforms=[
+        dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
+        dict(type='GridSample', grid_size=0.001, mode='train',
+             return_grid_coord=True),
+        dict(type='ShufflePoint'),
+    ]),
+    dict(type='Collect', stream='edep',
+         keys=('coord', 'grid_coord'),
+         feat_keys=('coord', 'energy')),
+]
+```
+
+**Supervised segmentation (edep + labl):**
+
+```python
+transform=[
+    dict(type='ApplyToStream', stream='edep', transforms=[
+        dict(type='RemapSegment', scheme='motif_5cls'),
         dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
         dict(type='GridSample', grid_size=0.001, mode='train',
              return_grid_coord=True),
     ]),
-    dict(type='ToTensor'),
-    dict(type='Collect', stream='seg',
+    dict(type='Collect', stream='edep',
          keys=('coord', 'grid_coord', 'segment'),
          feat_keys=('coord', 'energy')),
-])
+]
 ```
 
-Pass `required=True` to `ApplyToStream` to raise when the named stream
-is absent; otherwise the transform is a no-op — handy for configs that
-stay valid across different `modalities` choices.
+**Instance segmentation on 2D hits:**
+
+```python
+transform=[
+    dict(type='ApplyToStream', stream='hits', transforms=[
+        dict(type='RemapSegment', scheme='motif_5cls'),
+        dict(type='GridSample', grid_size=1.0, mode='train',
+             return_grid_coord=True),
+    ]),
+    dict(type='Collect', stream='hits',
+         keys=('coord', 'grid_coord', 'segment', 'instance'),
+         feat_keys=('coord', 'energy')),
+]
+```
+
+---
+
+## DataLoader and performance
+
+### Standard setup
+
+```python
+from torch.utils.data import DataLoader
+from pimm_data import JAXTPCDataset, collate_fn
+
+ds = JAXTPCDataset(data_root="...", modalities=("edep", "labl"),
+                   label_key="pdg", transform=[...])
+loader = DataLoader(ds, batch_size=4, num_workers=4,
+                    collate_fn=collate_fn, pin_memory=True)
+```
+
+### Why Collect must be the last transform
+
+`Collect` converts numpy arrays to torch tensors. PyTorch's
+`ForkingPickler` transfers tensors via file-descriptor sharing (~400
+bytes) instead of pickling the full array. Without tensor output,
+`num_workers > 0` is **slower** than serial for large events.
+
+### Choosing num_workers
+
+| GPU step time | Recommended workers |
+|---|---|
+| > 200 ms | 2 |
+| 100–200 ms | 4 |
+| < 100 ms | 6 |
+
+Per-worker memory is ~240 MB. `prefetch_factor=2` (default) is sufficient.
+
+### Batch output
+
+`collate_fn` concatenates variable-length point clouds and tracks
+boundaries with a cumulative `offset` tensor:
+
+```python
+batch['coord'].shape    # (total_points, 3)
+batch['feat'].shape     # (total_points, 4)
+batch['segment'].shape  # (total_points,)
+batch['offset']         # tensor([N0, N0+N1, N0+N1+N2, ...])
+```
+
+`point_collate_fn` adds mix-up augmentation.
+`inseg_collate_fn` flattens instance-segmentation query batches.
+
+### Performance tips
+
+1. **Use `volume=0`** to load a single TPC volume (2–4x faster).
+2. **Load only needed modalities** — `hits` is heaviest (~90 MB/event).
+3. **End transforms with `Collect`** — enables zero-copy IPC.
+4. **`GridSample` early** — downsample before expensive transforms.
+5. **`cache=True`** with `SharedArray` installed eliminates HDF5
+   decompression after the first epoch.
+
+---
+
+## API reference
+
+### JAXTPCDataset
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `data_root` | str | *(required)* | Root directory with modality subdirectories |
+| `split` | str | `'train'` | Split subdirectory. Pass `''` for flat layouts. |
+| `modalities` | tuple | `('edep',)` | Subset of `'edep'`, `'sensor'`, `'hits'`, `'labl'` |
+| `dataset_name` | str | `'sim'` | File prefix (matches `sim_edep_*.h5`) |
+| `volume` | int/None | `None` | Single-volume filter. `None` = all volumes. |
+| `label_key` | str | `'pdg'` | Labl column for `segment`: `'pdg'`, `'cluster'`, `'interaction'`, `'ancestor'` |
+| `min_deposits` | int | `0` | Drop events with fewer deposits |
+| `include_physics` | bool | `True` | Load dx, theta, phi, charge, photons, t0_us |
+| `label_keys` | list/None | `None` | Whitelist of labl datasets to load (`None` = all) |
+| `transform` | list/None | `None` | List of transform dicts (NOT a Compose object) |
+| `max_len` | int | `-1` | Cap on event count (`-1` = no cap) |
+| `cache` | bool | `False` | Shared-memory caching (requires `SharedArray`) |
+
+### LUCiDDataset
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `data_root` | str | *(required)* | Root directory with modality subdirectories |
+| `split` | str | `''` | Split subdirectory (default: no split) |
+| `modalities` | tuple | `('sensor',)` | Subset of `'edep'`, `'sensor'`, `'hits'`, `'labl'` |
+| `dataset_name` | str | `'wc'` | File prefix (matches `wc_sensor_*.h5`) |
+| `min_segments` | int | `0` | Drop events with fewer edep segments |
+| `include_physics` | bool | `True` | Load direction, beta_start, n_cherenkov |
+| `pe_threshold` | float | `0.0` | Drop hits entries with PE ≤ threshold |
+| `transform` | list/None | `None` | List of transform dicts |
+
+### Config-driven construction
+
+```python
+from pimm_data import build_dataset
+ds = build_dataset(dict(type='JAXTPCDataset', data_root='...', modalities=('edep',)))
+```
+
+---
 
 ## Layout
 
@@ -303,7 +531,8 @@ src/pimm_data/
     lucid.py           LUCiDDataset
     readers/           Per-modality HDF5 readers
     transform.py       Compose, TRANSFORMS, Collect, ...
-    detector_transforms.py  PDGToSemantic, RemapSegment, ApplyToStream
+    detector_transforms.py  ApplyToStream, PDGToSemantic, RemapSegment
+    collate.py         collate_fn, point_collate_fn, inseg_collate_fn
     utils/pdg.py       pdg_to_semantic(pdg, scheme)
 ```
 
@@ -313,14 +542,10 @@ src/pimm_data/
 pytest
 ```
 
-Tests load real simulation output; point them at local datasets with
-two environment variables:
+Tests use synthetic data by default. Point at real datasets with:
 
 ```bash
 export JAXTPC_DATA_ROOT=/path/to/jaxtpc_dataset
 export LUCID_DATA_ROOT=/path/to/wc_dataset
 pytest
 ```
-
-Tests skip gracefully when the corresponding root isn't set or doesn't
-exist, so partial setups still run the rest of the suite.

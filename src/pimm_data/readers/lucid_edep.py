@@ -1,5 +1,5 @@
 """
-LUCiDSegReader — 3D segment deposits from LUCiD ``seg/`` HDF5 files
+LUCiDEdepReader — 3D segment deposits from LUCiD ``edep/`` HDF5 files
 (``format_version: 3``).
 
 Each ``event_XXX`` holds per-segment arrays. One "segment" is one
@@ -29,17 +29,17 @@ import h5py
 log = logging.getLogger(__name__)
 
 
-class LUCiDSegReader:
-    """Reads 3D segment deposits from LUCiD ``seg/`` files.
+class LUCiDEdepReader:
+    """Reads 3D segment deposits from LUCiD ``edep/`` files.
 
     Parameters
     ----------
     data_root : str
-        Directory containing seg shard files.
+        Directory containing edep shard files.
     split : str
         Split name (used as subdirectory when present).
     dataset_name : str
-        File prefix — matches ``{dataset_name}_seg_*.h5``.
+        File prefix — matches ``{dataset_name}_edep_*.h5``.
     min_segments : int
         Drop events with fewer than this many segments.
     include_physics : bool
@@ -56,7 +56,7 @@ class LUCiDSegReader:
 
         self.h5_files = self._find_files()
         assert len(self.h5_files) > 0, (
-            f"No LUCiD seg files found for '{dataset_name}' in "
+            f"No LUCiD edep files found for '{dataset_name}' in "
             f"{data_root}/{split}")
 
         self._initted = False
@@ -66,8 +66,8 @@ class LUCiDSegReader:
     def _find_files(self):
         for pattern in (
             os.path.join(self.data_root, self.split,
-                         f'{self.dataset_name}_seg_*.h5'),
-            os.path.join(self.data_root, f'{self.dataset_name}_seg_*.h5'),
+                         f'{self.dataset_name}_edep_*.h5'),
+            os.path.join(self.data_root, f'{self.dataset_name}_edep_*.h5'),
         ):
             files = sorted(glob.glob(pattern))
             if files:
@@ -102,7 +102,7 @@ class LUCiDSegReader:
             self.indices.append(index)
 
         self.cumulative_lengths = np.cumsum(self.cumulative_lengths)
-        log.info("LUCiDSegReader: %d events from %d files (min_segments=%d)",
+        log.info("LUCiDEdepReader: %d events from %d files (min_segments=%d)",
                  self.cumulative_lengths[-1], len(self.h5_files),
                  self.min_segments)
 

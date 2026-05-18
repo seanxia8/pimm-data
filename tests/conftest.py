@@ -6,7 +6,7 @@ a fresh clone can run the full suite end-to-end.
 
 Override: point ``JAXTPC_DATA_ROOT`` / ``LUCID_DATA_ROOT`` at a real v3
 dataset to run the same tests against production output. The fixture
-validates the v3 layout (all of ``seg``/``sensor``/``inst``/``labl`` must
+validates the v3 layout (all of ``edep``/``sensor``/``hits``/``labl`` must
 be present) and skips with a descriptive reason if the override is
 incomplete.
 
@@ -20,7 +20,7 @@ import pytest
 
 from pimm_data.testing import make_jaxtpc_sample, make_lucid_sample
 
-_REQUIRED_SUBDIRS = ('seg', 'sensor', 'inst', 'labl')
+_REQUIRED_SUBDIRS = ('edep', 'sensor', 'hits', 'labl')
 
 
 def _validate_override(path):

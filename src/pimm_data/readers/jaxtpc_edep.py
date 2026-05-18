@@ -1,14 +1,12 @@
 """
-JAXTPCSegReader — reads 3D truth deposits from JAXTPC seg files.
+JAXTPCEdepReader — reads 3D truth energy deposits from JAXTPC edep files.
 
-Produces raw geometry, physics, and IDs as numpy arrays. Labels are not
+Produces raw geometry and physics as numpy arrays. Labels are not
 applied here — that is the dataset's responsibility (see jaxtpc.py).
 
 Output dict:
     coord (N,3), energy (N,1), volume_id (N,1),
-    track_ids (N,), group_ids (N,), pdg (N,), interaction_ids (N,),
-    ancestor_track_ids (N,),
-    and optionally: dx, theta, phi, t0_us, charge, photons, qs_fractions
+    and optionally: dx, theta, phi, t0_us, charge, photons
 """
 
 import os
@@ -20,8 +18,8 @@ import h5py
 log = logging.getLogger(__name__)
 
 
-class JAXTPCSegReader:
-    """Reads 3D truth deposits from JAXTPC seg HDF5 files.
+class JAXTPCEdepReader:
+    """Reads 3D truth deposits from JAXTPC edep HDF5 files.
 
     Concatenates volumes into a single point cloud with a volume_id feature.
     No label computation — just raw data.
@@ -29,11 +27,11 @@ class JAXTPCSegReader:
     Parameters
     ----------
     data_root : str
-        Directory containing seg shard files.
+        Directory containing edep shard files.
     split : str
         Split name — used as subdirectory or glob pattern.
     dataset_name : str
-        File prefix (e.g., 'sim' matches 'sim_seg_0000.h5').
+        File prefix (e.g., 'sim' matches 'sim_edep_0000.h5').
     min_deposits : int
         Minimum deposits per event to include in index.
     include_physics : bool
@@ -53,7 +51,7 @@ class JAXTPCSegReader:
 
         self.h5_files = self._find_files()
         assert len(self.h5_files) > 0, (
-            f"No seg files found for '{dataset_name}' in {data_root}/{split}")
+            f"No edep files found for '{dataset_name}' in {data_root}/{split}")
 
         self._initted = False
         self._h5data = []
@@ -61,14 +59,14 @@ class JAXTPCSegReader:
         self._build_index()
 
     def _find_files(self):
-        """Discover seg shard files."""
+        """Discover edep shard files."""
         pattern = os.path.join(
             self.data_root, self.split,
-            f'{self.dataset_name}_seg_*.h5')
+            f'{self.dataset_name}_edep_*.h5')
         files = sorted(glob.glob(pattern))
         if not files:
             pattern = os.path.join(
-                self.data_root, f'{self.dataset_name}_seg_*.h5')
+                self.data_root, f'{self.dataset_name}_edep_*.h5')
             files = sorted(glob.glob(pattern))
         return files
 
@@ -111,7 +109,7 @@ class JAXTPCSegReader:
             self.indices.append(index)
 
         self.cumulative_lengths = np.cumsum(self.cumulative_lengths)
-        log.info("JAXTPCSegReader: %d events from %d files (min_deposits=%d)",
+        log.info("JAXTPCEdepReader: %d events from %d files (min_deposits=%d)",
                  self.cumulative_lengths[-1], len(self.h5_files),
                  self.min_deposits)
 
@@ -171,8 +169,8 @@ class JAXTPCSegReader:
     def _read_volume(self, vg, n, vol_idx):
         """Read physics arrays from a volume group.
 
-        Seg carries only deposit-level physics. Instance identifiers
-        (group_ids, segment→group FK) live in inst; per-track metadata
+        Edep carries only deposit-level physics. Instance identifiers
+        (group_ids, deposit→group FK) live in hits; per-track metadata
         (pdg, interaction, ancestor) lives in labl.
         """
         step = float(vg.attrs['pos_step_mm'])

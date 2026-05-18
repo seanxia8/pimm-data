@@ -30,21 +30,21 @@ def test_volume_filter(jaxtpc_data_root):
 @pytest.mark.parametrize('label_key', ['pdg', 'cluster', 'interaction'])
 def test_different_label_keys(jaxtpc_data_root, label_key):
     ds = make_ds(jaxtpc_data_root,
-                 modalities=('seg', 'labl'), label_key=label_key)
+                 modalities=('edep', 'labl'), label_key=label_key)
     d = ds.get_data(0)
-    assert len(np.unique(d['seg']['segment'])) > 1
+    assert len(np.unique(d['edep']['segment'])) > 1
 
 
 def test_len_and_getitem(jaxtpc_data_root):
-    ds = make_ds(jaxtpc_data_root, modalities=('seg',))
+    ds = make_ds(jaxtpc_data_root, modalities=('edep',))
     assert len(ds) > 0
     sample = ds[0]
     assert isinstance(sample, dict)
-    assert isinstance(sample['seg']['coord'], np.ndarray)
+    assert isinstance(sample['edep']['coord'], np.ndarray)
 
 
 def test_name_and_split(jaxtpc_data_root):
-    ds = make_ds(jaxtpc_data_root, modalities=('seg',))
+    ds = make_ds(jaxtpc_data_root, modalities=('edep',))
     d = ds.get_data(0)
     assert 'name' in d
     assert 'split' in d
@@ -53,7 +53,7 @@ def test_name_and_split(jaxtpc_data_root):
 def test_dataloader_workers(jaxtpc_data_root):
     """Dataset is fork-safe via lazy h5py_worker_init()."""
     import torch
-    ds = make_ds(jaxtpc_data_root, modalities=('seg', 'labl'),
+    ds = make_ds(jaxtpc_data_root, modalities=('edep', 'labl'),
                  label_key='pdg', min_deposits=0)
     if len(ds) < 2:
         pytest.skip("Need at least 2 events")
@@ -63,7 +63,7 @@ def test_dataloader_workers(jaxtpc_data_root):
     seen = 0
     for batch in loader:
         assert isinstance(batch[0], dict)
-        assert 'seg' in batch[0]
+        assert 'edep' in batch[0]
         seen += 1
         if seen >= 2:
             break
@@ -71,11 +71,11 @@ def test_dataloader_workers(jaxtpc_data_root):
 
 
 def test_physics_fields_present(jaxtpc_data_root):
-    ds = make_ds(jaxtpc_data_root, modalities=('seg',), include_physics=True)
+    ds = make_ds(jaxtpc_data_root, modalities=('edep',), include_physics=True)
     d = ds.get_data(0)
     for key in ('dx', 'theta', 'phi'):
-        if key in d['seg']:  # present iff h5 had the field
-            assert d['seg'][key].shape[1] == 1
+        if key in d['edep']:  # present iff h5 had the field
+            assert d['edep'][key].shape[1] == 1
 
 
 def test_empty_modalities_raises(jaxtpc_data_root):
@@ -85,4 +85,4 @@ def test_empty_modalities_raises(jaxtpc_data_root):
 
 def test_unknown_modality_raises(jaxtpc_data_root):
     with pytest.raises(ValueError, match='Unknown'):
-        make_ds(jaxtpc_data_root, modalities=('seg', 'mystery'))
+        make_ds(jaxtpc_data_root, modalities=('edep', 'mystery'))

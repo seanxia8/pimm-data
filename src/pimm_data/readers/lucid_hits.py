@@ -1,5 +1,5 @@
 """
-LUCiDInstReader — per-particle PMT hit decomposition from LUCiD ``inst/``
+LUCiDHitsReader — per-particle PMT hit decomposition from LUCiD ``hits/``
 HDF5 files (``format_version: 3``).
 
 Each row is a ``(sensor_idx, particle_idx)`` entry: the contribution of one
@@ -7,13 +7,12 @@ particle to one PMT. The same ``sensor_idx`` appears multiple times when
 several particles illuminate the same PMT. ``particle_idx`` indexes into
 the per-event particle table (see :class:`LUCiDLablReader`).
 
-Output dict (flat, ``pp_*`` prefix kept from the pre-v3 LUCiD sensor format
-so downstream code using the "labels" pipeline needs only a modality change):
+Output dict (flat):
 
-    pp_sensor_idx    (E,) int32
-    pp_particle_idx  (E,) int32
-    pp_pe            (E,) float32
-    pp_t             (E,) float32
+    sensor_idx       (E,) int32
+    particle_idx     (E,) int32
+    pe               (E,) float32
+    t                (E,) float32
 """
 
 import os
@@ -25,19 +24,19 @@ import h5py
 log = logging.getLogger(__name__)
 
 
-class LUCiDInstReader:
-    """Reads per-particle hit decomposition from LUCiD ``inst/`` files.
+class LUCiDHitsReader:
+    """Reads per-particle hit decomposition from LUCiD ``hits/`` files.
 
     Parameters
     ----------
     data_root : str
-        Directory containing inst shard files.
+        Directory containing hits shard files.
     split : str
         Split name (used as subdirectory when present).
     dataset_name : str
-        File prefix — matches ``{dataset_name}_inst_*.h5``.
+        File prefix — matches ``{dataset_name}_hits_*.h5``.
     pe_threshold : float
-        If > 0, drop entries with ``pp_pe <= pe_threshold``.
+        If > 0, drop entries with ``pe <= pe_threshold``.
     """
 
     def __init__(self, data_root, split='', dataset_name='wc',
@@ -49,7 +48,7 @@ class LUCiDInstReader:
 
         self.h5_files = self._find_files()
         assert len(self.h5_files) > 0, (
-            f"No LUCiD inst files found for '{dataset_name}' in "
+            f"No LUCiD hits files found for '{dataset_name}' in "
             f"{data_root}/{split}")
 
         self._initted = False
@@ -59,8 +58,8 @@ class LUCiDInstReader:
     def _find_files(self):
         for pattern in (
             os.path.join(self.data_root, self.split,
-                         f'{self.dataset_name}_inst_*.h5'),
-            os.path.join(self.data_root, f'{self.dataset_name}_inst_*.h5'),
+                         f'{self.dataset_name}_hits_*.h5'),
+            os.path.join(self.data_root, f'{self.dataset_name}_hits_*.h5'),
         ):
             files = sorted(glob.glob(pattern))
             if files:
@@ -84,7 +83,7 @@ class LUCiDInstReader:
             self.indices.append(index)
 
         self.cumulative_lengths = np.cumsum(self.cumulative_lengths)
-        log.info("LUCiDInstReader: %d events from %d files",
+        log.info("LUCiDHitsReader: %d events from %d files",
                  self.cumulative_lengths[-1], len(self.h5_files))
 
     def h5py_worker_init(self):
@@ -123,10 +122,10 @@ class LUCiDInstReader:
             t = t[mask]
 
         return {
-            'pp_sensor_idx': sensor_idx,
-            'pp_particle_idx': particle_idx,
-            'pp_pe': pe,
-            'pp_t': t,
+            'sensor_idx': sensor_idx,
+            'particle_idx': particle_idx,
+            'pe': pe,
+            't': t,
         }
 
     def __len__(self):

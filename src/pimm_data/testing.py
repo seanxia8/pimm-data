@@ -2,7 +2,7 @@
 Synthetic v3 fixture generators for JAXTPC and LUCiD.
 
 The readers in :mod:`pimm_data.readers` expect a specific on-disk HDF5
-layout (four modalities per dataset: ``seg/``, ``sensor/``, ``inst/``,
+layout (four modalities per dataset: ``edep/``, ``sensor/``, ``hits/``,
 ``labl/``). Real fixtures are produced by the JAXTPC and LUCiD
 simulation pipelines, but those take GPU-bound physics runs and
 gigabytes of edepsim input — overkill for exercising the reader /
@@ -14,13 +14,13 @@ production code. The generated files are tiny (a few KB each) and
 satisfy every cross-modality invariant the readers and dataset layer
 rely on:
 
-* **JAXTPC.** ``inst.segment_to_group`` indexes into
-  ``inst.group_to_track``; ``labl.segment_to_track[i] ==
-  inst.group_to_track[inst.segment_to_group[i]]``; every per-deposit
+* **JAXTPC.** ``hits.deposit_to_group`` indexes into
+  ``hits.group_to_track``; ``labl.deposit_to_track[i] ==
+  hits.group_to_track[hits.deposit_to_group[i]]``; every per-deposit
   track id appears in ``labl.track_ids``; per-plane CSR entries
   decode to the declared ``n_pixels``.
-* **LUCiD.** Every ``seg.track_idx`` appears in
-  ``labl.per_track.track_id``; every ``inst.particle_idx`` and
+* **LUCiD.** Every ``edep.track_idx`` appears in
+  ``labl.per_track.track_id``; every ``hits.particle_idx`` and
   ``labl.per_track.particle_idx`` is a valid index into the per-
   particle tables; every ``labl.per_track.ancestor`` is itself a
   ``track_id`` in ``per_track``.
@@ -57,14 +57,14 @@ def make_jaxtpc_sample(outdir, dataset_name='sim', n_events=2, n_files=1,
                        n_pixels_per_plane=40, readout_type='wire', seed=0):
     """Write a minimal schema-conformant JAXTPC v3 dataset.
 
-    Creates ``{outdir}/{seg,sensor,inst,labl}/{dataset_name}_{mod}_NNNN.h5``.
+    Creates ``{outdir}/{edep,sensor,hits,labl}/{dataset_name}_{mod}_NNNN.h5``.
 
     ``readout_type`` is ``'wire'`` (three U/V/Y planes per volume) or
     ``'pixel'`` (single ``Pixel`` plane per volume; coord adds a pz axis).
     """
     assert readout_type in ('wire', 'pixel'), readout_type
     os.makedirs(outdir, exist_ok=True)
-    for mod in ('seg', 'sensor', 'inst', 'labl'):
+    for mod in ('edep', 'sensor', 'hits', 'labl'):
         os.makedirs(os.path.join(outdir, mod), exist_ok=True)
 
     rng = np.random.default_rng(seed)
@@ -76,13 +76,13 @@ def make_jaxtpc_sample(outdir, dataset_name='sim', n_events=2, n_files=1,
             for _ in range(n_events)
         ]
         tag = f'{dataset_name}_{{mod}}_{file_idx:04d}.h5'
-        _write_jaxtpc_seg(os.path.join(outdir, 'seg',
-                                       tag.format(mod='seg')), events)
+        _write_jaxtpc_edep(os.path.join(outdir, 'edep',
+                                        tag.format(mod='edep')), events)
         _write_jaxtpc_sensor(os.path.join(outdir, 'sensor',
                                           tag.format(mod='sensor')), events,
                              readout_type)
-        _write_jaxtpc_inst(os.path.join(outdir, 'inst',
-                                        tag.format(mod='inst')), events,
+        _write_jaxtpc_hits(os.path.join(outdir, 'hits',
+                                        tag.format(mod='hits')), events,
                            readout_type)
         _write_jaxtpc_labl(os.path.join(outdir, 'labl',
                                         tag.format(mod='labl')), events)
@@ -109,9 +109,9 @@ def _build_jaxtpc_event(rng, n_volumes, n_deposits, n_groups, n_tracks,
                                    ].astype(np.int32)
 
         # Each deposit belongs to exactly one group
-        segment_to_group = rng.integers(0, n_groups, size=n_deposits).astype(
+        deposit_to_group = rng.integers(0, n_groups, size=n_deposits).astype(
             np.int32)
-        segment_to_track = group_to_track[segment_to_group].astype(np.int32)
+        deposit_to_track = group_to_track[deposit_to_group].astype(np.int32)
 
         # Deposit geometry — uint16 positions scaled by pos_step_mm
         # Keep positions well inside uint16 range and the detector fiducial.
@@ -137,8 +137,8 @@ def _build_jaxtpc_event(rng, n_volumes, n_deposits, n_groups, n_tracks,
             positions=positions, de=de, dx=dx, theta=theta, phi=phi,
             t0_us=t0_us, charge=charge, photons=photons,
             qs_fractions=qs_fractions,
-            segment_to_group=segment_to_group,
-            segment_to_track=segment_to_track,
+            deposit_to_group=deposit_to_group,
+            deposit_to_track=deposit_to_track,
             group_to_track=group_to_track,
             track_ids=track_ids,
             track_pdg=track_pdg,
@@ -174,9 +174,9 @@ def _build_jaxtpc_plane(rng, n_groups, n_pixels_per_plane, readout_type='wire'):
     charges_u16 = rng.integers(1, 65535, size=total, dtype=np.uint16)
 
     # Delta-encoded sparse for the sensor file. Strictly ordered so
-    # cumsum reconstructs a monotone stream. Made longer than the inst
-    # CSR total so sensor != inst, mirroring electronics shaping which
-    # spreads each inst pixel across many sensor ticks.
+    # cumsum reconstructs a monotone stream. Made longer than the hits
+    # CSR total so sensor != hits, mirroring electronics shaping which
+    # spreads each hits pixel across many sensor ticks.
     n_sparse = max(total * 3 + 1, 2)
     delta_time = np.concatenate([
         np.array([0], dtype=np.int16),
@@ -220,7 +220,7 @@ def _build_jaxtpc_plane(rng, n_groups, n_pixels_per_plane, readout_type='wire'):
     return out
 
 
-def _write_jaxtpc_seg(path, events):
+def _write_jaxtpc_edep(path, events):
     with h5py.File(path, 'w') as f:
         cfg = f.create_group('config')
         cfg.attrs['n_events'] = len(events)
@@ -269,7 +269,7 @@ def _write_jaxtpc_sensor(path, events, readout_type='wire'):
                                           data=plane['delta_wire'])
 
 
-def _write_jaxtpc_inst(path, events, readout_type='wire'):
+def _write_jaxtpc_hits(path, events, readout_type='wire'):
     shared_keys = ('group_ids', 'group_sizes', 'center_times',
                    'peak_charges', 'delta_times', 'charges_u16')
     readout_keys = (('center_py', 'center_pz', 'delta_py', 'delta_pz')
@@ -284,8 +284,8 @@ def _write_jaxtpc_inst(path, events, readout_type='wire'):
             for v in volumes:
                 vg = evt.create_group(f'volume_{v["vol_idx"]}')
                 vg.create_dataset('group_to_track', data=v['group_to_track'])
-                vg.create_dataset('segment_to_group',
-                                  data=v['segment_to_group'])
+                vg.create_dataset('deposit_to_group',
+                                  data=v['deposit_to_group'])
                 vg.create_dataset('qs_fractions', data=v['qs_fractions'])
                 for plane_name, plane in v['planes'].items():
                     pg = vg.create_group(plane_name)
@@ -312,8 +312,8 @@ def _write_jaxtpc_labl(path, events):
                 vg.create_dataset('track_cluster', data=cluster)
                 vg.create_dataset('track_interaction', data=interaction)
                 vg.create_dataset('track_ancestor', data=v['track_ids'])
-                vg.create_dataset('segment_to_track',
-                                  data=v['segment_to_track'])
+                vg.create_dataset('deposit_to_track',
+                                  data=v['deposit_to_track'])
 
 
 # ---------------------------------------------------------------------------
@@ -324,35 +324,35 @@ _LUCID_PDG_POOL = np.array([11, 13, 22, 211, -11], dtype=np.int32)
 
 
 def make_lucid_sample(outdir, dataset_name='wc', n_events=2, n_files=1,
-                      n_segments=80, n_hits=120, n_inst_entries=200,
+                      n_segments=80, n_hits=120, n_hits_entries=200,
                       n_sensors=64, n_tracks=8, n_particles=3, seed=0):
     """Write a minimal schema-conformant LUCiD v3 dataset.
 
-    Creates ``{outdir}/{seg,sensor,inst,labl}/{dataset_name}_{mod}_NNNN.h5``.
+    Creates ``{outdir}/{edep,sensor,hits,labl}/{dataset_name}_{mod}_NNNN.h5``.
     """
     os.makedirs(outdir, exist_ok=True)
-    for mod in ('seg', 'sensor', 'inst', 'labl'):
+    for mod in ('edep', 'sensor', 'hits', 'labl'):
         os.makedirs(os.path.join(outdir, mod), exist_ok=True)
 
     rng = np.random.default_rng(seed)
-    # Single PMT geometry reused across all events and both sensor/inst files.
+    # Single PMT geometry reused across all events and both sensor/hits files.
     pmt_positions = rng.uniform(-500.0, 500.0,
                                 size=(n_sensors, 3)).astype(np.float32)
 
     for file_idx in range(n_files):
         events = [
-            _build_lucid_event(rng, n_segments, n_hits, n_inst_entries,
+            _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
                                n_sensors, n_tracks, n_particles)
             for _ in range(n_events)
         ]
         tag = f'{dataset_name}_{{mod}}_{file_idx:04d}.h5'
-        _write_lucid_seg(os.path.join(outdir, 'seg',
-                                      tag.format(mod='seg')), events)
+        _write_lucid_edep(os.path.join(outdir, 'edep',
+                                       tag.format(mod='edep')), events)
         _write_lucid_sensor(os.path.join(outdir, 'sensor',
                                          tag.format(mod='sensor')),
                             events, pmt_positions)
-        _write_lucid_inst(os.path.join(outdir, 'inst',
-                                       tag.format(mod='inst')),
+        _write_lucid_hits(os.path.join(outdir, 'hits',
+                                       tag.format(mod='hits')),
                           events, pmt_positions)
         _write_lucid_labl(os.path.join(outdir, 'labl',
                                        tag.format(mod='labl')), events)
@@ -360,7 +360,7 @@ def make_lucid_sample(outdir, dataset_name='wc', n_events=2, n_files=1,
     return outdir
 
 
-def _build_lucid_event(rng, n_segments, n_hits, n_inst_entries,
+def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
                        n_sensors, n_tracks, n_particles):
     # Allocate track ids — ancestor must itself be a valid track id, so we
     # pick one track per particle to be that particle's ancestor and
@@ -395,7 +395,7 @@ def _build_lucid_event(rng, n_segments, n_hits, n_inst_entries,
     initial_energy = rng.uniform(0.1, 10.0, size=n_tracks).astype(np.float32)
     n_cherenkov_track = rng.integers(0, 100, size=n_tracks).astype(np.int32)
 
-    # Seg — track_idx is a POSITIONAL index into the per_track table
+    # Edep — track_idx is a POSITIONAL index into the per_track table
     # (row index, not the Geant4 track_id value). See
     # lucid.py::_lookup_per_track which gathers with track_idx directly.
     seg_track_idx = rng.integers(0, n_tracks, size=n_segments).astype(np.int32)
@@ -416,16 +416,16 @@ def _build_lucid_event(rng, n_segments, n_hits, n_inst_entries,
     sensor_pe = rng.uniform(0.1, 50.0, size=n_hits).astype(np.float32)
     sensor_t = rng.uniform(0.0, 100.0, size=n_hits).astype(np.float32)
 
-    # Inst — particle_idx must be valid index into per_particle (< n_particles)
-    inst_sensor_idx = rng.integers(0, n_sensors, size=n_inst_entries).astype(
+    # Hits — particle_idx must be valid index into per_particle (< n_particles)
+    hits_sensor_idx = rng.integers(0, n_sensors, size=n_hits_entries).astype(
         np.int32)
-    inst_particle_idx = rng.integers(0, n_particles,
-                                     size=n_inst_entries).astype(np.int32)
-    inst_pe = rng.uniform(0.05, 20.0, size=n_inst_entries).astype(np.float32)
-    inst_t = rng.uniform(0.0, 100.0, size=n_inst_entries).astype(np.float32)
+    hits_particle_idx = rng.integers(0, n_particles,
+                                     size=n_hits_entries).astype(np.int32)
+    hits_pe = rng.uniform(0.05, 20.0, size=n_hits_entries).astype(np.float32)
+    hits_t = rng.uniform(0.0, 100.0, size=n_hits_entries).astype(np.float32)
 
     return dict(
-        seg=dict(
+        edep=dict(
             start=start, end=end, direction=direction, edep=edep,
             time=seg_time, track_idx=seg_track_idx, beta_start=beta_start,
             n_cherenkov=n_cherenkov_seg,
@@ -433,9 +433,9 @@ def _build_lucid_event(rng, n_segments, n_hits, n_inst_entries,
         sensor=dict(
             sensor_idx=sensor_sensor_idx, PE=sensor_pe, T=sensor_t,
         ),
-        inst=dict(
-            sensor_idx=inst_sensor_idx, particle_idx=inst_particle_idx,
-            PE=inst_pe, T=inst_t,
+        hits=dict(
+            sensor_idx=hits_sensor_idx, particle_idx=hits_particle_idx,
+            PE=hits_pe, T=hits_t,
         ),
         labl=dict(
             t0=np.float32(rng.uniform(-1.0, 1.0)),
@@ -454,13 +454,13 @@ def _build_lucid_event(rng, n_segments, n_hits, n_inst_entries,
     )
 
 
-def _write_lucid_seg(path, events):
+def _write_lucid_edep(path, events):
     with h5py.File(path, 'w') as f:
         cfg = f.create_group('config')
         cfg.attrs['n_events'] = len(events)
         cfg.attrs['format_version'] = 3
         for i, evt in enumerate(events):
-            seg = evt['seg']
+            seg = evt['edep']
             g = f.create_group(f'event_{i:03d}')
             g.attrs['n_segments'] = int(seg['start'].shape[0])
             g.create_dataset('start_x', data=seg['start'][:, 0])
@@ -494,7 +494,7 @@ def _write_lucid_sensor(path, events, pmt_positions):
             g.create_dataset('T', data=s['T'])
 
 
-def _write_lucid_inst(path, events, pmt_positions):
+def _write_lucid_hits(path, events, pmt_positions):
     with h5py.File(path, 'w') as f:
         cfg = f.create_group('config')
         cfg.attrs['n_events'] = len(events)
@@ -502,7 +502,7 @@ def _write_lucid_inst(path, events, pmt_positions):
         cfg.attrs['format_version'] = 3
         cfg.create_dataset('sensor_positions', data=pmt_positions)
         for i, evt in enumerate(events):
-            s = evt['inst']
+            s = evt['hits']
             g = f.create_group(f'event_{i:03d}')
             g.create_dataset('sensor_idx', data=s['sensor_idx'])
             g.create_dataset('particle_idx', data=s['particle_idx'])

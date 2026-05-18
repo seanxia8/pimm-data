@@ -26,16 +26,16 @@ def _ds(root, modalities, **kw):
 
 
 @pytest.fixture(scope='module')
-def seg_sample(jaxtpc_data_root):
-    """A 3D seg sub-dict with labels (seg.coord shape (N,3))."""
-    ds = _ds(jaxtpc_data_root, ('seg', 'labl'))
+def edep_sample(jaxtpc_data_root):
+    """A 3D edep sub-dict with labels (edep.coord shape (N,3))."""
+    ds = _ds(jaxtpc_data_root, ('edep', 'labl'))
     return ds.get_data(0)
 
 
 @pytest.fixture(scope='module')
-def inst_sample(jaxtpc_data_root):
-    """A 2D inst sub-dict with labels (inst.coord shape (E,2))."""
-    ds = _ds(jaxtpc_data_root, ('inst', 'labl'))
+def hits_sample(jaxtpc_data_root):
+    """A 2D hits sub-dict with labels (hits.coord shape (E,2))."""
+    ds = _ds(jaxtpc_data_root, ('hits', 'labl'))
     return ds.get_data(0)
 
 
@@ -60,56 +60,56 @@ def _run(sample, stream, transforms):
 
 # --- spatial transforms on 3D seg -----------------------------------------
 
-def test_seg_3d_normalize_coord(seg_sample):
-    out = _run(seg_sample, 'seg', [
+def test_edep_3d_normalize_coord(edep_sample):
+    out = _run(edep_sample, 'edep', [
         dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0)])
     assert np.max(np.linalg.norm(out['coord'], axis=1)) < 2.0, \
         "after scale=4000 mm, radius should be roughly bounded"
 
 
-def test_seg_3d_random_rotate(seg_sample):
-    out = _run(seg_sample, 'seg', [
+def test_edep_3d_random_rotate(edep_sample):
+    out = _run(edep_sample, 'edep', [
         dict(type='RandomRotate', angle=[-1, 1], axis='z',
              center=[0, 0, 0], p=1.0)])
-    assert out['coord'].shape == seg_sample['seg']['coord'].shape
+    assert out['coord'].shape == edep_sample['edep']['coord'].shape
 
 
-def test_seg_3d_random_flip(seg_sample):
-    out = _run(seg_sample, 'seg', [dict(type='RandomFlip', p=1.0)])
-    assert out['coord'].shape == seg_sample['seg']['coord'].shape
+def test_edep_3d_random_flip(edep_sample):
+    out = _run(edep_sample, 'edep', [dict(type='RandomFlip', p=1.0)])
+    assert out['coord'].shape == edep_sample['edep']['coord'].shape
 
 
-def test_seg_3d_random_scale(seg_sample):
-    out = _run(seg_sample, 'seg', [
+def test_edep_3d_random_scale(edep_sample):
+    out = _run(edep_sample, 'edep', [
         dict(type='RandomScale', scale=[0.9, 1.1])])
-    assert out['coord'].shape == seg_sample['seg']['coord'].shape
+    assert out['coord'].shape == edep_sample['edep']['coord'].shape
 
 
-def test_seg_3d_random_jitter(seg_sample):
-    out = _run(seg_sample, 'seg', [
+def test_edep_3d_random_jitter(edep_sample):
+    out = _run(edep_sample, 'edep', [
         dict(type='RandomJitter', sigma=0.01, clip=0.05)])
-    assert out['coord'].shape == seg_sample['seg']['coord'].shape
+    assert out['coord'].shape == edep_sample['edep']['coord'].shape
 
 
-def test_seg_3d_grid_sample(seg_sample):
-    out = _run(seg_sample, 'seg', [
+def test_edep_3d_grid_sample(edep_sample):
+    out = _run(edep_sample, 'edep', [
         dict(type='GridSample', grid_size=10.0, hash_type='fnv',
              mode='train', return_grid_coord=True)])
-    n_before = seg_sample['seg']['coord'].shape[0]
+    n_before = edep_sample['edep']['coord'].shape[0]
     n_after = out['coord'].shape[0]
     assert n_after <= n_before
     assert 'grid_coord' in out
 
 
-def test_seg_3d_log_transform_energy(seg_sample):
-    out = _run(seg_sample, 'seg', [
+def test_edep_3d_log_transform_energy(edep_sample):
+    out = _run(edep_sample, 'edep', [
         dict(type='LogTransform', min_val=0.01, max_val=20.0,
              keys=('energy',))])
-    assert out['energy'].shape == seg_sample['seg']['energy'].shape
+    assert out['energy'].shape == edep_sample['edep']['energy'].shape
 
 
-def test_seg_3d_remap_segment(seg_sample):
-    out = _run(seg_sample, 'seg', [
+def test_edep_3d_remap_segment(edep_sample):
+    out = _run(edep_sample, 'edep', [
         dict(type='RemapSegment', scheme='motif_5cls')])
     # motif_5cls has classes 0..4
     unique = np.unique(out['segment'])
@@ -117,83 +117,83 @@ def test_seg_3d_remap_segment(seg_sample):
     assert unique.min() >= -1  # -1 sentinel preserved
 
 
-def test_seg_3d_shuffle_point(seg_sample):
-    out = _run(seg_sample, 'seg', [dict(type='ShufflePoint')])
-    assert out['coord'].shape == seg_sample['seg']['coord'].shape
+def test_edep_3d_shuffle_point(edep_sample):
+    out = _run(edep_sample, 'edep', [dict(type='ShufflePoint')])
+    assert out['coord'].shape == edep_sample['edep']['coord'].shape
     # per-point arrays must still line up
     assert out['segment'].shape[0] == out['coord'].shape[0]
 
 
-def test_seg_3d_random_dropout(seg_sample):
-    out = _run(seg_sample, 'seg', [
+def test_edep_3d_random_dropout(edep_sample):
+    out = _run(edep_sample, 'edep', [
         dict(type='RandomDropout', dropout_ratio=0.2, dropout_application_ratio=1.0)])
-    n_before = seg_sample['seg']['coord'].shape[0]
+    n_before = edep_sample['edep']['coord'].shape[0]
     n_after = out['coord'].shape[0]
     assert n_after < n_before
 
 
-def test_seg_3d_positive_shift(seg_sample):
-    out = _run(seg_sample, 'seg', [dict(type='PositiveShift')])
+def test_edep_3d_positive_shift(edep_sample):
+    out = _run(edep_sample, 'edep', [dict(type='PositiveShift')])
     assert (out['coord'] >= 0).all()
 
 
-def test_seg_3d_copy(seg_sample):
+def test_edep_3d_copy(edep_sample):
     """Copy transform duplicates keys within a stream sub-dict."""
-    out = _run(seg_sample, 'seg', [
+    out = _run(edep_sample, 'edep', [
         dict(type='Copy', keys_dict={'coord': 'origin_coord'})])
     assert 'origin_coord' in out
     assert out['origin_coord'].shape == out['coord'].shape
 
 
-# --- spatial transforms on 2D inst -----------------------------------------
+# --- spatial transforms on 2D hits -----------------------------------------
 
-def test_inst_2d_grid_sample(inst_sample):
-    out = _run(inst_sample, 'inst', [
+def test_hits_2d_grid_sample(hits_sample):
+    out = _run(hits_sample, 'hits', [
         dict(type='GridSample', grid_size=1.0, hash_type='fnv',
              mode='train', return_grid_coord=True)])
     assert out['coord'].shape[1] == 2
     assert 'grid_coord' in out
 
 
-def test_inst_2d_random_flip(inst_sample):
-    out = _run(inst_sample, 'inst', [
+def test_hits_2d_random_flip(hits_sample):
+    out = _run(hits_sample, 'hits', [
         dict(type='RandomFlip', p=0.5, axes=('x', 'y'))])
-    assert out['coord'].shape == inst_sample['inst']['coord'].shape
+    assert out['coord'].shape == hits_sample['hits']['coord'].shape
 
 
-def test_inst_2d_random_scale(inst_sample):
-    out = _run(inst_sample, 'inst', [
+def test_hits_2d_random_scale(hits_sample):
+    out = _run(hits_sample, 'hits', [
         dict(type='RandomScale', scale=[0.9, 1.1])])
-    assert out['coord'].shape == inst_sample['inst']['coord'].shape
+    assert out['coord'].shape == hits_sample['hits']['coord'].shape
 
 
-def test_inst_2d_random_jitter(inst_sample):
-    out = _run(inst_sample, 'inst', [
+def test_hits_2d_random_jitter(hits_sample):
+    out = _run(hits_sample, 'hits', [
         dict(type='RandomJitter', sigma=0.01, clip=0.05)])
-    assert out['coord'].shape == inst_sample['inst']['coord'].shape
+    assert out['coord'].shape == hits_sample['hits']['coord'].shape
 
 
-def test_inst_2d_remap_segment(inst_sample):
-    out = _run(inst_sample, 'inst', [
+def test_hits_2d_remap_segment(hits_sample):
+    out = _run(hits_sample, 'hits', [
         dict(type='RemapSegment', scheme='motif_5cls')])
     unique = np.unique(out['segment'])
     assert unique.max() <= 4 and unique.min() >= -1
 
 
-def test_inst_2d_shuffle_point(inst_sample):
-    out = _run(inst_sample, 'inst', [dict(type='ShufflePoint')])
+def test_hits_2d_shuffle_point(hits_sample):
+    out = _run(hits_sample, 'hits', [dict(type='ShufflePoint')])
     assert out['segment'].shape[0] == out['coord'].shape[0]
 
 
-def test_inst_2d_random_dropout(inst_sample):
-    out = _run(inst_sample, 'inst', [
+def test_hits_2d_random_dropout(hits_sample):
+    out = _run(hits_sample, 'hits', [
         dict(type='RandomDropout', dropout_ratio=0.2,
              dropout_application_ratio=1.0)])
-    assert out['coord'].shape[0] < inst_sample['inst']['coord'].shape[0]
+    assert out['coord'].shape[0] < hits_sample['hits']['coord'].shape[0]
 
 
-def test_inst_2d_positive_shift(inst_sample):
-    out = _run(inst_sample, 'inst', [dict(type='PositiveShift')])
+def test_hits_2d_positive_shift(hits_sample):
+    out = _run(hits_sample, 'hits', [dict(type='PositiveShift')])
     assert (out['coord'] >= 0).all()
 
 
@@ -220,30 +220,30 @@ def test_sensor_2d_log_transform_energy(sensor_sample):
 
 # --- transforms that should be avoided on 2D streams ----------------------
 
-def test_normalize_coord_on_2d_is_unsafe(inst_sample):
+def test_normalize_coord_on_2d_is_unsafe(hits_sample):
     """NormalizeCoord handles 2D coords OK (no hardcoded 3D). Smoke check."""
-    out = _run(inst_sample, 'inst', [
+    out = _run(hits_sample, 'hits', [
         dict(type='NormalizeCoord', center=[0, 0], scale=1000.0)])
     assert out['coord'].shape[1] == 2
 
 
-def test_random_rotate_on_2d_fails(inst_sample):
+def test_random_rotate_on_2d_fails(hits_sample):
     """RandomRotate builds a 3x3 matrix and multiplies by coord; 2D coord
     has shape (N, 2), incompatible. Documents the limitation."""
     with pytest.raises(ValueError):
-        _run(inst_sample, 'inst', [
+        _run(hits_sample, 'hits', [
             dict(type='RandomRotate', angle=[-1, 1], axis='z',
                  center=[0, 0], p=1.0)])
 
 
 # --- full-pipeline integration for each typical recipe --------------------
 
-def test_recipe_3d_supervised_seg(jaxtpc_data_root):
+def test_recipe_3d_supervised_edep(jaxtpc_data_root):
     """Canonical 3D semantic seg pipeline — the one in
-    configs/detector/_base_/jaxtpc_seg.py."""
-    ds = _ds(jaxtpc_data_root, ('seg', 'labl'),
+    configs/detector/_base_/jaxtpc_edep.py."""
+    ds = _ds(jaxtpc_data_root, ('edep', 'labl'),
              transform=[
-                 dict(type='ApplyToStream', stream='seg', transforms=[
+                 dict(type='ApplyToStream', stream='edep', transforms=[
                      dict(type='RemapSegment', scheme='motif_5cls'),
                      dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
                      dict(type='LogTransform', min_val=0.01, max_val=20.0),
@@ -254,7 +254,7 @@ def test_recipe_3d_supervised_seg(jaxtpc_data_root):
                      dict(type='RandomFlip', p=0.5),
                  ]),
                  dict(type='ToTensor'),
-                 dict(type='Collect', stream='seg',
+                 dict(type='Collect', stream='edep',
                       keys=('coord', 'grid_coord', 'segment'),
                       feat_keys=('coord', 'energy')),
              ])
@@ -264,18 +264,18 @@ def test_recipe_3d_supervised_seg(jaxtpc_data_root):
     assert len(batch['offset']) == 2
 
 
-def test_recipe_2d_supervised_inst(jaxtpc_data_root):
-    """2D supervised-on-inst pipeline (inst+labl combo)."""
-    ds = _ds(jaxtpc_data_root, ('inst', 'labl'),
+def test_recipe_2d_supervised_hits(jaxtpc_data_root):
+    """2D supervised-on-hits pipeline (hits+labl combo)."""
+    ds = _ds(jaxtpc_data_root, ('hits', 'labl'),
              transform=[
-                 dict(type='ApplyToStream', stream='inst', transforms=[
+                 dict(type='ApplyToStream', stream='hits', transforms=[
                      dict(type='RemapSegment', scheme='motif_5cls'),
                      dict(type='GridSample', grid_size=1.0, hash_type='fnv',
                           mode='train', return_grid_coord=True),
                      dict(type='RandomFlip', p=0.5, axes=('x', 'y')),
                  ]),
                  dict(type='ToTensor'),
-                 dict(type='Collect', stream='inst',
+                 dict(type='Collect', stream='hits',
                       keys=('coord', 'grid_coord', 'segment', 'instance'),
                       feat_keys=('coord', 'energy')),
              ])
@@ -302,16 +302,16 @@ def test_recipe_ssl_raw_sensor(jaxtpc_data_root):
     assert 'segment' not in batch
 
 
-def test_recipe_denoising_sensor_plus_inst(jaxtpc_data_root):
+def test_recipe_denoising_sensor_plus_hits(jaxtpc_data_root):
     """Two ApplyToStream blocks, one per cloud. Both streams transform
     independently; Collect pulls whichever becomes the model input."""
-    ds = _ds(jaxtpc_data_root, ('sensor', 'inst'),
+    ds = _ds(jaxtpc_data_root, ('sensor', 'hits'),
              transform=[
                  dict(type='ApplyToStream', stream='sensor', transforms=[
                      dict(type='GridSample', grid_size=1.0, mode='train',
                           return_grid_coord=True),
                  ]),
-                 dict(type='ApplyToStream', stream='inst', transforms=[
+                 dict(type='ApplyToStream', stream='hits', transforms=[
                      dict(type='GridSample', grid_size=1.0, mode='train',
                           return_grid_coord=True),
                  ]),

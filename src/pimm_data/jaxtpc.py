@@ -3,29 +3,29 @@ JAXTPCDataset — multimodal dataset for LArTPC detector simulation output.
 
 Loads from co-indexed HDF5 files produced by JAXTPC's production pipeline:
 
-* ``seg/`` — 3D truth deposits
+* ``edep/`` — 3D truth deposits
 * ``sensor/`` — raw sparse wire / pixel readout
-* ``inst/`` — per-instance sensor decomposition
+* ``hits/`` — per-instance sensor decomposition
 * ``labl/`` — track_id → label lookup tables
 
-Modality strings: ``'seg'``, ``'sensor'``, ``'inst'``, ``'labl'``. See
+Modality strings: ``'edep'``, ``'sensor'``, ``'hits'``, ``'labl'``. See
 README §Modality combinations for the combination matrix.
 
 Returns a **nested** dict: each loaded modality owns a sub-dict with clean
 unprefixed keys::
 
     {
-      'seg':    {'coord': (N,3), 'energy': (N,1), 'volume_id': ..., ...},
+      'edep':   {'coord': (N,3), 'energy': (N,1), 'volume_id': ..., ...},
       'sensor': {'coord': (M,D), 'energy': (M,1), 'plane_id': ...,
                  'readout_type': 'wire'|'pixel',
                  'raw': {plane_label: {'wire'|'py'+'pz', 'time', 'value'}}},
-      'inst':   {'coord': (E,D), 'energy': (E,1), 'instance': ..., ...,
+      'hits':   {'coord': (E,D), 'energy': (E,1), 'instance': ..., ...,
                  'readout_type': 'wire'|'pixel',
                  'raw': {plane_label: {'wire'|'py'+'pz', 'time',
                                        'group_id', 'charge'}}},
       'labl':   {'v0': {'track_ids': (T,), 'track_pdg': (T,),
-                        'segment_to_track': (N_v,), ...}, 'v1': {...}},
-      'bridges':{'group_to_track_v0': (G,), 'segment_to_group_v0': (N_v,),
+                        'deposit_to_track': (N_v,), ...}, 'v1': {...}},
+      'bridges':{'group_to_track_v0': (G,), 'deposit_to_group_v0': (N_v,),
                  'qs_fractions_v0': ..., ...},
       'name': str, 'split': str,
     }
@@ -46,10 +46,10 @@ import numpy as np
 
 from .builder import DATASETS
 from .defaults import DefaultDataset
-from .readers.jaxtpc_seg import JAXTPCSegReader
+from .readers.jaxtpc_edep import JAXTPCEdepReader
 from .readers.jaxtpc_sensor import JAXTPCSensorReader
 from .readers.jaxtpc_labl import JAXTPCLablReader
-from .readers.jaxtpc_inst import JAXTPCInstReader
+from .readers.jaxtpc_hits import JAXTPCHitsReader
 
 log = logging.getLogger(__name__)
 
@@ -61,16 +61,16 @@ class JAXTPCDataset(DefaultDataset):
     Parameters
     ----------
     data_root : str
-        Root directory with ``seg/``, ``sensor/``, ``inst/``, ``labl/``
+        Root directory with ``edep/``, ``sensor/``, ``hits/``, ``labl/``
         subdirectories.
     split : str
         Split name for file discovery.
     modalities : tuple[str]
-        Any subset of ``'seg'``, ``'sensor'``, ``'inst'``, ``'labl'``.
+        Any subset of ``'edep'``, ``'sensor'``, ``'hits'``, ``'labl'``.
         ``('labl',)`` and ``('sensor', 'labl')`` are invalid (see
         README §Modality combinations).
     dataset_name : str
-        File prefix (e.g., ``'sim'`` for ``sim_seg_0000.h5``).
+        File prefix (e.g., ``'sim'`` for ``sim_edep_0000.h5``).
     volume : int or None
         Load only this volume index. ``None`` = all volumes.
     label_key : str
@@ -80,9 +80,9 @@ class JAXTPCDataset(DefaultDataset):
         to each deposit / pixel entry; use a downstream ``RemapSegment`` to
         map raw values to task-specific class indices.
     min_deposits : int
-        Minimum 3D deposits per event (seg reader filter).
+        Minimum 3D deposits per event (edep reader filter).
     include_physics : bool
-        Whether seg reader loads dx, theta, phi, charge, photons, etc.
+        Whether edep reader loads dx, theta, phi, charge, photons, etc.
     label_keys : list or None
         Which label datasets to load from labl files (None → all).
     transform : list or None
@@ -96,7 +96,7 @@ class JAXTPCDataset(DefaultDataset):
         self,
         data_root,
         split='train',
-        modalities=('seg',),
+        modalities=('edep',),
         dataset_name='sim',
         volume=None,
         label_key='pdg',
@@ -124,18 +124,18 @@ class JAXTPCDataset(DefaultDataset):
         self._source_data_root = data_root
         self._source_split = split
 
-        self.seg_reader = None
+        self.edep_reader = None
         self.sensor_reader = None
         self.labl_reader = None
-        self.inst_reader = None
+        self.hits_reader = None
 
-        if 'seg' in self._modalities:
-            self.seg_reader = JAXTPCSegReader(
-                data_root=self._modality_root('seg'), split=split,
+        if 'edep' in self._modalities:
+            self.edep_reader = JAXTPCEdepReader(
+                data_root=self._modality_root('edep'), split=split,
                 dataset_name=dataset_name, min_deposits=min_deposits,
                 include_physics=include_physics, volume=volume)
 
-        # sensor/inst readout auto-detection. Build the readers unfiltered
+        # sensor/hits readout auto-detection. Build the readers unfiltered
         # first so they can detect readout_type, then apply the volume
         # plane filter using the correct plane labels for this readout.
         if 'sensor' in self._modalities:
@@ -148,14 +148,14 @@ class JAXTPCDataset(DefaultDataset):
                 data_root=self._modality_root('labl'), split=split,
                 dataset_name=dataset_name, label_keys=label_keys)
 
-        if 'inst' in self._modalities:
-            self.inst_reader = JAXTPCInstReader(
-                data_root=self._modality_root('inst'), split=split,
+        if 'hits' in self._modalities:
+            self.hits_reader = JAXTPCHitsReader(
+                data_root=self._modality_root('hits'), split=split,
                 dataset_name=dataset_name, planes='all')
 
         # Resolve readout_type once from whichever reader can tell us.
         self._readout_type = 'wire'
-        for r in (self.sensor_reader, self.inst_reader):
+        for r in (self.sensor_reader, self.hits_reader):
             if r is not None:
                 self._readout_type = r.readout_type
                 break
@@ -169,14 +169,14 @@ class JAXTPCDataset(DefaultDataset):
                           f'volume_{volume}_Y']
             if self.sensor_reader is not None:
                 self.sensor_reader.planes = planes
-            if self.inst_reader is not None:
-                self.inst_reader.planes = planes
+            if self.hits_reader is not None:
+                self.hits_reader.planes = planes
 
-        active_readers = [r for r in (self.seg_reader, self.sensor_reader,
-                                       self.labl_reader, self.inst_reader)
+        active_readers = [r for r in (self.edep_reader, self.sensor_reader,
+                                       self.labl_reader, self.hits_reader)
                           if r is not None]
-        self._canonical_reader = (self.seg_reader or self.sensor_reader
-                                  or self.inst_reader or self.labl_reader)
+        self._canonical_reader = (self.edep_reader or self.sensor_reader
+                                  or self.hits_reader or self.labl_reader)
         self._n_events = min(len(r) for r in active_readers)
 
         super().__init__(
@@ -199,22 +199,22 @@ class JAXTPCDataset(DefaultDataset):
         mods = set(modalities)
         if not mods:
             raise ValueError("modalities is empty; must load at least one")
-        unknown = mods - {'seg', 'sensor', 'inst', 'labl'}
+        unknown = mods - {'edep', 'sensor', 'hits', 'labl'}
         if unknown:
             raise ValueError(
                 f"Unknown modalities {unknown}; valid: "
-                "'seg', 'sensor', 'inst', 'labl'")
+                "'edep', 'sensor', 'hits', 'labl'")
         if mods == {'labl'}:
             raise ValueError(
                 "Invalid modality combination ('labl',): labl is a "
                 "dimension table and requires an instance-bearing modality "
-                "('seg' or 'inst') to join against. "
+                "('edep' or 'hits') to join against. "
                 "See README §Modality combinations.")
         if mods == {'sensor', 'labl'}:
             raise ValueError(
                 "Invalid modality combination ('sensor', 'labl'): sensor has "
                 "no instance separation, so labl cannot be attached. Add "
-                "'inst' or 'seg' to the modalities tuple. "
+                "'hits' or 'edep' to the modalities tuple. "
                 "See README §Modality combinations.")
 
     def _modality_root(self, modality):
@@ -251,10 +251,10 @@ class JAXTPCDataset(DefaultDataset):
             if labl_by_volume:
                 data['labl'] = labl_by_volume
 
-        if self.inst_reader is not None:
-            inst_raw = self.inst_reader.read_event(real_idx)
-            data['inst'] = self._build_inst_cloud(inst_raw, labl_by_volume)
-            bridges = self._build_bridges(inst_raw)
+        if self.hits_reader is not None:
+            hits_raw = self.hits_reader.read_event(real_idx)
+            data['hits'] = self._build_hits_cloud(hits_raw, labl_by_volume)
+            bridges = self._build_bridges(hits_raw)
             if bridges:
                 data['bridges'] = bridges
 
@@ -262,9 +262,9 @@ class JAXTPCDataset(DefaultDataset):
             data['sensor'] = self._build_sensor_cloud(
                 self.sensor_reader.read_event(real_idx))
 
-        if self.seg_reader is not None:
-            data['seg'] = self._build_seg_cloud(
-                self.seg_reader.read_event(real_idx), labl_by_volume)
+        if self.edep_reader is not None:
+            data['edep'] = self._build_edep_cloud(
+                self.edep_reader.read_event(real_idx), labl_by_volume)
 
         return data
 
@@ -272,14 +272,14 @@ class JAXTPCDataset(DefaultDataset):
     # Per-modality builders
     # ------------------------------------------------------------------
 
-    def _build_seg_cloud(self, seg_raw, labl_by_volume):
+    def _build_edep_cloud(self, edep_raw, labl_by_volume):
         """3D deposit sub-dict; decorates with segment/instance if labl present."""
         sub = {}
-        for k, v in seg_raw.items():
+        for k, v in edep_raw.items():
             sub[k] = v  # coord, energy, volume_id, physics — readers emit bare
 
         if labl_by_volume and 'volume_id' in sub:
-            segment, instance = self._decorate_seg_from_labl(
+            segment, instance = self._decorate_edep_from_labl(
                 sub['volume_id'], labl_by_volume)
             sub['segment'] = segment
             sub['instance'] = instance
@@ -298,15 +298,15 @@ class JAXTPCDataset(DefaultDataset):
             'readout_type': self._readout_type,
         }
 
-    def _build_inst_cloud(self, inst_raw, labl_by_volume):
-        """Merge per-plane inst raw into a point cloud + raw passthrough.
+    def _build_hits_cloud(self, hits_raw, labl_by_volume):
+        """Merge per-plane hits raw into a point cloud + raw passthrough.
 
         Attaches ``segment`` when labl available (via group_to_track chain).
         ``instance`` is always attached (== group_id).
         """
         coord_keys = self._coord_keys()
         planes, coord, energy, plane_id, raw = self._merge_plane_dotted(
-            inst_raw, prefix='inst', value_key='charge',
+            hits_raw, prefix='hits', value_key='charge',
             coord_keys=coord_keys, extra_keys=('group_id',))
         # instance = per-entry group_id
         instance = np.concatenate(
@@ -319,12 +319,12 @@ class JAXTPCDataset(DefaultDataset):
             'readout_type': self._readout_type,
         }
         if labl_by_volume:
-            sub['segment'] = self._decorate_inst_from_labl(
-                planes, raw, inst_raw, labl_by_volume)
+            sub['segment'] = self._decorate_hits_from_labl(
+                planes, raw, hits_raw, labl_by_volume)
         return sub
 
     def _coord_keys(self):
-        """Per-plane column names that build the sensor/inst coord vector."""
+        """Per-plane column names that build the sensor/hits coord vector."""
         if self._readout_type == 'pixel':
             return ('py', 'pz', 'time')
         return ('wire', 'time')
@@ -345,12 +345,12 @@ class JAXTPCDataset(DefaultDataset):
             by_volume.setdefault(vid, {})[col] = v
         return by_volume
 
-    def _build_bridges(self, inst_raw):
-        """Extract per-volume bridge arrays (g2t, segment_to_group, qs_fractions)."""
+    def _build_bridges(self, hits_raw):
+        """Extract per-volume bridge arrays (g2t, deposit_to_group, qs_fractions)."""
         bridges = {}
-        for k, v in inst_raw.items():
+        for k, v in hits_raw.items():
             if (k.startswith('group_to_track_v')
-                    or k.startswith('segment_to_group_v')
+                    or k.startswith('deposit_to_group_v')
                     or k.startswith('qs_fractions_v')):
                 bridges[k] = v
         return bridges
@@ -406,11 +406,11 @@ class JAXTPCDataset(DefaultDataset):
 
         return planes, coord, energy, plane_id, raw_nested
 
-    def _decorate_seg_from_labl(self, volume_id, labl_by_volume):
-        """Broadcast per-track labl data onto each seg deposit.
+    def _decorate_edep_from_labl(self, volume_id, labl_by_volume):
+        """Broadcast per-track labl data onto each edep deposit.
 
-        Uses ``labl[vN]['segment_to_track']`` (row-aligned to the volume's
-        seg deposits) as the per-deposit FK, then looks up
+        Uses ``labl[vN]['deposit_to_track']`` (row-aligned to the volume's
+        edep deposits) as the per-deposit FK, then looks up
         ``labl[vN]['track_{label_key}']`` via binary search on ``track_ids``.
         """
         vid_flat = volume_id.ravel()
@@ -424,12 +424,12 @@ class JAXTPCDataset(DefaultDataset):
             mask = vid_flat == vol_num
             if not mask.any():
                 continue
-            if 'segment_to_track' not in vdata:
+            if 'deposit_to_track' not in vdata:
                 continue
-            per_dep_tid = vdata['segment_to_track'].astype(np.int32)
+            per_dep_tid = vdata['deposit_to_track'].astype(np.int32)
             n_vol = int(mask.sum())
             if per_dep_tid.shape[0] != n_vol:
-                log.warning("labl.%s.segment_to_track len %d != seg vol %d len %d",
+                log.warning("labl.%s.deposit_to_track len %d != edep vol %d len %d",
                             vkey, per_dep_tid.shape[0], vol_num, n_vol)
                 continue
             instance[mask] = per_dep_tid
@@ -447,9 +447,9 @@ class JAXTPCDataset(DefaultDataset):
 
         return segment, instance
 
-    def _decorate_inst_from_labl(self, planes, raw_nested, inst_flat,
+    def _decorate_hits_from_labl(self, planes, raw_nested, hits_flat,
                                  labl_by_volume):
-        """Per-inst-entry segment label via group_to_track → track lookup."""
+        """Per-hits-entry segment label via group_to_track → track lookup."""
         meta_col = f'track_{self._label_key}'
         all_labels = []
         for plane in planes:
@@ -463,7 +463,7 @@ class JAXTPCDataset(DefaultDataset):
             labels = np.full(n, -1, dtype=np.int32)
 
             g2t_key = f'group_to_track_v{vol_idx_str}'
-            g2t = inst_flat.get(g2t_key)
+            g2t = hits_flat.get(g2t_key)
             if g2t is None or vkey not in labl_by_volume:
                 all_labels.append(labels)
                 continue
@@ -502,7 +502,7 @@ class JAXTPCDataset(DefaultDataset):
         """Test-time data prep.
 
         Expects ``segment`` to be produced at the top level by a terminal
-        :class:`Collect` transform (e.g. ``Collect(stream='seg', ...)``).
+        :class:`Collect` transform (e.g. ``Collect(stream='edep', ...)``).
         """
         data_dict = self.get_data(idx)
         data_dict = self.transform(data_dict)
@@ -533,8 +533,8 @@ class JAXTPCDataset(DefaultDataset):
         return result_dict
 
     def __del__(self):
-        for attr in ('seg_reader', 'sensor_reader', 'labl_reader',
-                     'inst_reader'):
+        for attr in ('edep_reader', 'sensor_reader', 'labl_reader',
+                     'hits_reader'):
             reader = getattr(self, attr, None)
             if reader is not None:
                 try:

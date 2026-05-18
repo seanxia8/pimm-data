@@ -90,14 +90,19 @@ class Collect(object):
 
     ``stream=`` scopes the source to ``data_dict[stream]`` before pulling
     keys. Use it to extract one stream from a nested
-    ``{'seg': {...}, 'inst': {...}}``-style dict produced by datasets
+    ``{'edep': {...}, 'hits': {...}}``-style dict produced by datasets
     that emit multiple point clouds::
 
-        Collect(stream='seg', keys=['coord', 'segment'],
+        Collect(stream='edep', keys=['coord', 'segment'],
                 feat_keys=['coord', 'energy'])
 
     Output keys stay bare (``coord``, ``segment``, ``feat``, …) so
     collate / Point / model see the same flat shape as before.
+
+    Extracted numpy arrays are converted to torch tensors automatically.
+    This enables zero-copy IPC when used with ``DataLoader(num_workers>0)``
+    — PyTorch transfers tensors via file-descriptor sharing (~400 bytes)
+    instead of pickling the full array.
     """
 
     def __init__(self, keys, offset_keys_dict=None, stream=None, **kwargs):
@@ -108,20 +113,26 @@ class Collect(object):
         self.stream = stream
         self.kwargs = kwargs
 
+    @staticmethod
+    def _to_tensor(v):
+        if isinstance(v, torch.Tensor):
+            return v
+        if isinstance(v, np.ndarray):
+            return torch.from_numpy(v)
+        return v
+
     def __call__(self, data_dict):
         source = data_dict[self.stream] if self.stream is not None else data_dict
         data = dict()
-        if isinstance(self.keys, str):
-            self.keys = [self.keys]
-        for key in self.keys:
-            data[key] = source[key]
+        keys = [self.keys] if isinstance(self.keys, str) else self.keys
+        for key in keys:
+            data[key] = self._to_tensor(source[key])
         for key, value in self.offset_keys.items():
             data[key] = torch.tensor([source[value].shape[0]])
-        for name, keys in self.kwargs.items():
-            name = name.replace("_keys", "")
-            assert isinstance(keys, Sequence)
-            data[name] = torch.cat([source[key].float() for key in keys], dim=1)
-        # Pass through top-level scalars (name/split) that live outside streams
+        for name, feat_keys in self.kwargs.items():
+            name = name.removesuffix("_keys") if name.endswith("_keys") else name
+            assert isinstance(feat_keys, Sequence) and not isinstance(feat_keys, str)
+            data[name] = torch.cat([self._to_tensor(source[key]).float() for key in feat_keys], dim=1)
         if self.stream is not None:
             for passthrough in ("name", "split"):
                 if passthrough in data_dict and passthrough not in data:

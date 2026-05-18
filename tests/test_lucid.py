@@ -1,4 +1,4 @@
-"""Tests for LUCiDDataset on format_version=3 data (seg/sensor/inst/labl)."""
+"""Tests for LUCiDDataset on format_version=3 data (edep/sensor/hits/labl)."""
 
 import numpy as np
 import pytest
@@ -26,14 +26,14 @@ def test_sensor_only(lucid_data_root):
     assert s['sensor_idx'].shape[0] == s['coord'].shape[0]
     assert 'segment' not in s and 'instance' not in s
     # No instance-bearing modality → no labl decoration possible
-    assert 'inst' not in d and 'seg' not in d and 'labl' not in d
+    assert 'hits' not in d and 'edep' not in d and 'labl' not in d
 
 
-def test_seg_only(lucid_data_root):
-    """Seg alone: raw geometry + physics, no decoration from labl."""
-    ds = make_ds(lucid_data_root, modalities=('seg',))
+def test_edep_only(lucid_data_root):
+    """Edep alone: raw geometry + physics, no decoration from labl."""
+    ds = make_ds(lucid_data_root, modalities=('edep',))
     d = ds.get_data(0)
-    seg = d['seg']
+    seg = d['edep']
     assert seg['coord'].shape[1] == 3
     assert seg['energy'].shape[1] == 1
     assert 'track_idx' in seg
@@ -45,14 +45,14 @@ def test_seg_only(lucid_data_root):
     assert 'segment' not in seg and 'instance' not in seg
 
 
-def test_inst_only(lucid_data_root):
-    """Inst alone: per-particle hit decomposition, particle_idx as instance.
+def test_hits_only(lucid_data_root):
+    """Hits alone: per-particle hit decomposition, particle_idx as instance.
 
     ``segment`` requires labl; without it we still expose particle_idx
     / instance."""
-    ds = make_ds(lucid_data_root, modalities=('inst',))
+    ds = make_ds(lucid_data_root, modalities=('hits',))
     d = ds.get_data(0)
-    inst = d['inst']
+    inst = d['hits']
     assert inst['coord'].shape[1] == 3
     assert 'particle_idx' in inst
     assert 'instance' in inst
@@ -76,11 +76,11 @@ def test_invalid_modalities(lucid_data_root, mods):
 # Labl decoration
 # ---------------------------------------------------------------------------
 
-def test_inst_plus_labl_labels(lucid_data_root):
-    """Inst + labl: segment and instance populated at particle level."""
-    ds = make_ds(lucid_data_root, modalities=('inst', 'labl'))
+def test_hits_plus_labl_labels(lucid_data_root):
+    """Hits + labl: segment and instance populated at particle level."""
+    ds = make_ds(lucid_data_root, modalities=('hits', 'labl'))
     d = ds.get_data(0)
-    inst = d['inst']
+    inst = d['hits']
     assert 'segment' in inst and 'instance' in inst
     assert inst['segment'].shape == inst['instance'].shape
     # inst has particle-level duplicates: >1 unique instance expected
@@ -91,11 +91,11 @@ def test_inst_plus_labl_labels(lucid_data_root):
     assert np.array_equal(inst['segment'], expected)
 
 
-def test_seg_plus_labl_labels(lucid_data_root):
-    """Seg + labl: track_idx joins through per_track to particle category."""
-    ds = make_ds(lucid_data_root, modalities=('seg', 'labl'))
+def test_edep_plus_labl_labels(lucid_data_root):
+    """Edep + labl: track_idx joins through per_track to particle category."""
+    ds = make_ds(lucid_data_root, modalities=('edep', 'labl'))
     d = ds.get_data(0)
-    seg = d['seg']
+    seg = d['edep']
     assert 'particle_idx' in seg and 'instance' in seg and 'segment' in seg
     # instance alias of particle_idx
     assert np.array_equal(seg['instance'], seg['particle_idx'])
@@ -111,13 +111,13 @@ def test_seg_plus_labl_labels(lucid_data_root):
 def test_all_four_modalities(lucid_data_root):
     """Full multimodal load: all four sub-dicts present and consistent."""
     ds = make_ds(lucid_data_root,
-                 modalities=('seg', 'sensor', 'inst', 'labl'))
+                 modalities=('edep', 'sensor', 'hits', 'labl'))
     d = ds.get_data(0)
-    assert set(d.keys()) >= {'seg', 'sensor', 'inst', 'labl',
+    assert set(d.keys()) >= {'edep', 'sensor', 'hits', 'labl',
                              'name', 'split'}
     # All modalities agree on the same particle_idx index space
-    inst_pids = set(np.unique(d['inst']['particle_idx']).tolist())
-    seg_pids = set(np.unique(d['seg']['particle_idx']).tolist())
+    inst_pids = set(np.unique(d['hits']['particle_idx']).tolist())
+    seg_pids = set(np.unique(d['edep']['particle_idx']).tolist())
     n_particles = d['labl']['particle']['category'].shape[0]
     assert inst_pids <= set(range(n_particles))
     assert seg_pids <= set(range(n_particles))
@@ -129,7 +129,7 @@ def test_all_four_modalities(lucid_data_root):
 
 def test_labl_ancestor_columns_present(lucid_data_root):
     """Derived ancestor_particle_idx arrays ship with labl."""
-    ds = make_ds(lucid_data_root, modalities=('inst', 'labl'))
+    ds = make_ds(lucid_data_root, modalities=('hits', 'labl'))
     d = ds.get_data(0)
     labl = d['labl']
     pap = labl['particle']['ancestor_particle_idx']
@@ -149,24 +149,24 @@ def test_labl_ancestor_columns_present(lucid_data_root):
 def test_ancestor_remap_one_liner(lucid_data_root):
     """The documented ancestor remap should be a single lookup."""
     ds = make_ds(lucid_data_root,
-                 modalities=('inst', 'seg', 'labl'))
+                 modalities=('hits', 'edep', 'labl'))
     d = ds.get_data(0)
 
-    # inst
+    # hits
     pap = d['labl']['particle']['ancestor_particle_idx']
-    inst_anc = pap[d['inst']['particle_idx']]
-    assert inst_anc.shape == d['inst']['instance'].shape
+    hits_anc = pap[d['hits']['particle_idx']]
+    assert hits_anc.shape == d['hits']['instance'].shape
     # ancestor grouping must not be finer than particle grouping
-    assert np.unique(inst_anc).size <= np.unique(d['inst']['instance']).size
+    assert np.unique(hits_anc).size <= np.unique(d['hits']['instance']).size
 
-    # seg
+    # edep
     tap = d['labl']['track']['ancestor_particle_idx']
-    seg_anc = tap[d['seg']['track_idx']]
-    assert seg_anc.shape == d['seg']['instance'].shape
-    assert np.unique(seg_anc).size <= np.unique(d['seg']['instance']).size
+    edep_anc = tap[d['edep']['track_idx']]
+    assert edep_anc.shape == d['edep']['instance'].shape
+    assert np.unique(edep_anc).size <= np.unique(d['edep']['instance']).size
 
-    # inst and seg share the ancestor index space
-    assert set(np.unique(inst_anc).tolist()) == set(np.unique(seg_anc).tolist())
+    # hits and edep share the ancestor index space
+    assert set(np.unique(hits_anc).tolist()) == set(np.unique(edep_anc).tolist())
 
 
 # ---------------------------------------------------------------------------
@@ -207,19 +207,19 @@ def test_dataloader_workers(lucid_data_root):
 
 _VALID_COMBOS = [
     # singles (labl alone is invalid; covered separately)
-    ('sensor',), ('seg',), ('inst',),
+    ('sensor',), ('edep',), ('hits',),
     # pairs without labl
-    ('sensor', 'seg'), ('sensor', 'inst'), ('seg', 'inst'),
+    ('sensor', 'edep'), ('sensor', 'hits'), ('edep', 'hits'),
     # pairs with labl (sensor+labl is invalid; skip)
-    ('seg', 'labl'), ('inst', 'labl'),
+    ('edep', 'labl'), ('hits', 'labl'),
     # triples without labl
-    ('sensor', 'seg', 'inst'),
+    ('sensor', 'edep', 'hits'),
     # triples with labl
-    ('sensor', 'seg', 'labl'),
-    ('sensor', 'inst', 'labl'),
-    ('seg', 'inst', 'labl'),
+    ('sensor', 'edep', 'labl'),
+    ('sensor', 'hits', 'labl'),
+    ('edep', 'hits', 'labl'),
     # all four
-    ('sensor', 'seg', 'inst', 'labl'),
+    ('sensor', 'edep', 'hits', 'labl'),
 ]
 
 
@@ -231,20 +231,20 @@ def test_modality_combo_loads(lucid_data_root, mods):
     for m in mods:
         assert m in d, f"missing modality {m} for combo {mods}"
     # Modalities not requested must not appear
-    for m in ('sensor', 'seg', 'inst', 'labl'):
+    for m in ('sensor', 'edep', 'hits', 'labl'):
         if m not in mods:
             assert m not in d, f"unexpected modality {m} for combo {mods}"
     # If labl present with an instance-bearer, decoration must happen
-    if 'labl' in mods and 'inst' in mods:
-        assert 'segment' in d['inst'] and 'instance' in d['inst']
-    if 'labl' in mods and 'seg' in mods:
-        assert 'segment' in d['seg'] and 'instance' in d['seg']
+    if 'labl' in mods and 'hits' in mods:
+        assert 'segment' in d['hits'] and 'instance' in d['hits']
+    if 'labl' in mods and 'edep' in mods:
+        assert 'segment' in d['edep'] and 'instance' in d['edep']
     # If labl absent, no decoration anywhere
     if 'labl' not in mods:
-        if 'inst' in d:
-            assert 'segment' not in d['inst']
-        if 'seg' in d:
-            assert 'segment' not in d['seg']
+        if 'hits' in d:
+            assert 'segment' not in d['hits']
+        if 'edep' in d:
+            assert 'segment' not in d['edep']
 
 
 # ---------------------------------------------------------------------------
@@ -254,17 +254,17 @@ def test_modality_combo_loads(lucid_data_root, mods):
 def test_iterate_all_events_all_four(lucid_data_root):
     """Walk every event in the shard with all four modalities active."""
     ds = make_ds(lucid_data_root,
-                 modalities=('seg', 'sensor', 'inst', 'labl'))
+                 modalities=('edep', 'sensor', 'hits', 'labl'))
     assert len(ds) > 0
     n_particles_per_evt = []
     for i in range(len(ds)):
         d = ds.get_data(i)
-        for m in ('sensor', 'seg', 'inst', 'labl'):
+        for m in ('sensor', 'edep', 'hits', 'labl'):
             assert m in d
         # instance IDs must stay within the event's particle table
         P = d['labl']['particle']['category'].shape[0]
-        assert d['inst']['instance'].max() < P
-        assert d['seg']['instance'].max() < P
+        assert d['hits']['instance'].max() < P
+        assert d['edep']['instance'].max() < P
         # ancestor reduction must not introduce out-of-range IDs
         pap = d['labl']['particle']['ancestor_particle_idx']
         assert pap.max() < P
@@ -277,12 +277,12 @@ def test_iterate_all_events_all_four(lucid_data_root):
 # Reader kwargs surface
 # ---------------------------------------------------------------------------
 
-def test_seg_include_physics_false(lucid_data_root):
+def test_edep_include_physics_false(lucid_data_root):
     """include_physics=False suppresses direction / beta_start / n_cherenkov."""
-    ds = make_ds(lucid_data_root, modalities=('seg',),
+    ds = make_ds(lucid_data_root, modalities=('edep',),
                  include_physics=False)
     d = ds.get_data(0)
-    seg = d['seg']
+    seg = d['edep']
     for k in ('direction', 'beta_start', 'n_cherenkov'):
         assert k not in seg, f"{k} should be absent with include_physics=False"
     # Core fields still present
@@ -290,49 +290,49 @@ def test_seg_include_physics_false(lucid_data_root):
         assert k in seg
 
 
-def test_inst_pe_threshold(lucid_data_root):
+def test_hits_pe_threshold(lucid_data_root):
     """pe_threshold drops low-PE entries consistently across keys."""
-    d0 = make_ds(lucid_data_root, modalities=('inst',)).get_data(0)
-    d1 = make_ds(lucid_data_root, modalities=('inst',),
+    d0 = make_ds(lucid_data_root, modalities=('hits',)).get_data(0)
+    d1 = make_ds(lucid_data_root, modalities=('hits',),
                  pe_threshold=1.5).get_data(0)
-    assert d1['inst']['coord'].shape[0] < d0['inst']['coord'].shape[0]
+    assert d1['hits']['coord'].shape[0] < d0['hits']['coord'].shape[0]
     # All retained PEs must exceed the threshold
-    assert float(d1['inst']['energy'].min()) > 1.5
+    assert float(d1['hits']['energy'].min()) > 1.5
     # Length consistency across all per-row arrays
-    n = d1['inst']['coord'].shape[0]
+    n = d1['hits']['coord'].shape[0]
     for k in ('energy', 'time', 'sensor_idx', 'particle_idx', 'instance'):
-        assert d1['inst'][k].shape[0] == n
+        assert d1['hits'][k].shape[0] == n
 
 
-def test_seg_min_segments_filter(lucid_data_root):
+def test_edep_min_segments_filter(lucid_data_root):
     """min_segments drops small events; remaining count is non-increasing."""
-    full = make_ds(lucid_data_root, modalities=('seg',), min_segments=0)
-    filtered = make_ds(lucid_data_root, modalities=('seg',),
+    full = make_ds(lucid_data_root, modalities=('edep',), min_segments=0)
+    filtered = make_ds(lucid_data_root, modalities=('edep',),
                        min_segments=2000)
     assert len(filtered) <= len(full)
 
 
-def test_pmt_coord_alignment_inst_vs_sensor(lucid_data_root):
-    """inst and sensor must decode coord via the same PMT table."""
+def test_pmt_coord_alignment_hits_vs_sensor(lucid_data_root):
+    """hits and sensor must decode coord via the same PMT table."""
     ds = make_ds(lucid_data_root,
-                 modalities=('sensor', 'inst'))
+                 modalities=('sensor', 'hits'))
     d = ds.get_data(0)
-    # Where sensor_idx matches, coords must match (inst is a decomposition
+    # Where sensor_idx matches, coords must match (hits is a decomposition
     # of sensor, not an independent geometry).
     sensor_map = {int(s): d['sensor']['coord'][i]
                   for i, s in enumerate(d['sensor']['sensor_idx'])}
-    # Spot-check 10 inst rows
-    for i in range(0, min(10, d['inst']['coord'].shape[0])):
-        s = int(d['inst']['sensor_idx'][i])
+    # Spot-check 10 hits rows
+    for i in range(0, min(10, d['hits']['coord'].shape[0])):
+        s = int(d['hits']['sensor_idx'][i])
         if s in sensor_map:
-            np.testing.assert_array_equal(d['inst']['coord'][i],
+            np.testing.assert_array_equal(d['hits']['coord'][i],
                                           sensor_map[s])
 
 
-def test_inst_alone_loads_geometry_from_own_config(lucid_data_root):
-    """Inst without sensor must still decode coord via its own config."""
-    ds = make_ds(lucid_data_root, modalities=('inst',))
+def test_hits_alone_loads_geometry_from_own_config(lucid_data_root):
+    """Hits without sensor must still decode coord via its own config."""
+    ds = make_ds(lucid_data_root, modalities=('hits',))
     d = ds.get_data(0)
-    assert d['inst']['coord'].shape[1] == 3
+    assert d['hits']['coord'].shape[1] == 3
     # Non-trivial geometry (not all zeros / fallback)
-    assert float(np.abs(d['inst']['coord']).max()) > 0.1
+    assert float(np.abs(d['hits']['coord']).max()) > 0.1

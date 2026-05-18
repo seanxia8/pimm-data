@@ -5,7 +5,7 @@ files (``format_version: 3``).
 Layout: per-event groups. Each ``event_XXX`` holds flat per-hit arrays
 ``PE``, ``T``, ``sensor_idx``. The full PMT position table lives once per
 file at ``config/sensor_positions``. Per-particle decomposition and
-label columns are *not* in this file — they live in ``inst/`` and
+label columns are *not* in this file — they live in ``hits/`` and
 ``labl/``.
 
 Output dict:

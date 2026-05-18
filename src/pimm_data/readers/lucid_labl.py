@@ -23,8 +23,8 @@ semantics):
 These let a downstream transform flip ``instance`` from particle-level
 to ancestor-level with a single lookup:
 
-    data['inst']['instance'] = \
-        labl['particle']['ancestor_particle_idx'][data['inst']['particle_idx']]
+    data['hits']['instance'] = \
+        labl['particle']['ancestor_particle_idx'][data['hits']['particle_idx']]
 
 Output dict (flat; dataset layer rebuilds nested ``{event, particle, track}``):
 

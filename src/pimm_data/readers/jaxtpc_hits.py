@@ -1,15 +1,15 @@
 """
-JAXTPCInstReader — reads per-instance sensor decomposition from JAXTPC
-``inst/`` files. Supports both wire and pixel readouts.
+JAXTPCHitsReader — reads per-particle charge attribution from JAXTPC
+``hits/`` files. Supports both wire and pixel readouts.
 
 Readout type is auto-detected from ``/config.readout_type`` and exposed
 as ``reader.readout_type``. Decoding of CSR-encoded per-plane
 correspondence yields:
 
-- wire:  ``inst.{plane}.{wire, time, group_id, charge}``
-- pixel: ``inst.{plane}.{py, pz, time, group_id, charge}``
+- wire:  ``hits.{plane}.{wire, time, group_id, charge}``
+- pixel: ``hits.{plane}.{py, pz, time, group_id, charge}``
 
-Also loads per-volume ``group_to_track``, ``segment_to_group``, and
+Also loads per-volume ``group_to_track``, ``deposit_to_group``, and
 ``qs_fractions`` lookup tables (same shape for both readouts).
 
 All decoding is fully vectorized (no Python loops over groups).
@@ -24,17 +24,17 @@ import h5py
 log = logging.getLogger(__name__)
 
 
-class JAXTPCInstReader:
-    """Reads per-instance sensor decomposition from JAXTPC ``inst/`` HDF5 files.
+class JAXTPCHitsReader:
+    """Reads per-particle charge attribution from JAXTPC ``hits/`` HDF5 files.
 
     Parameters
     ----------
     data_root : str
-        Directory containing inst shard files.
+        Directory containing hits shard files.
     split : str
         Split name.
     dataset_name : str
-        File prefix (e.g., 'sim' matches 'sim_inst_0000.h5').
+        File prefix (e.g., 'sim' matches 'sim_hits_0000.h5').
     planes : str or list
         Which planes to load: 'all' or list like ['volume_0_U'].
     """
@@ -48,7 +48,7 @@ class JAXTPCInstReader:
 
         self.h5_files = self._find_files()
         assert len(self.h5_files) > 0, (
-            f"No inst files found for '{dataset_name}' in {data_root}/{split}")
+            f"No hits files found for '{dataset_name}' in {data_root}/{split}")
 
         self._initted = False
         self._h5data = []
@@ -57,14 +57,14 @@ class JAXTPCInstReader:
         self.readout_type = self._detect_readout_type()
 
     def _find_files(self):
-        """Locate inst shard files."""
+        """Locate hits shard files."""
         pattern = os.path.join(
             self.data_root, self.split,
-            f'{self.dataset_name}_inst_*.h5')
+            f'{self.dataset_name}_hits_*.h5')
         files = sorted(glob.glob(pattern))
         if not files:
             pattern = os.path.join(
-                self.data_root, f'{self.dataset_name}_inst_*.h5')
+                self.data_root, f'{self.dataset_name}_hits_*.h5')
             files = sorted(glob.glob(pattern))
         return files
 
@@ -85,7 +85,7 @@ class JAXTPCInstReader:
             self.indices.append(index)
 
         self.cumulative_lengths = np.cumsum(self.cumulative_lengths)
-        log.info("JAXTPCInstReader: %d events from %d files",
+        log.info("JAXTPCHitsReader: %d events from %d files",
                  self.cumulative_lengths[-1], len(self.h5_files))
 
     def h5py_worker_init(self):
@@ -202,15 +202,15 @@ class JAXTPCInstReader:
         return py, pz, times, gids, charges
 
     def read_event(self, idx):
-        """Read one event's per-instance sensor decomposition.
+        """Read one event's per-particle charge attribution.
 
         Wire returns:
-            inst.{vol_plane}.{wire, time, group_id, charge}
+            hits.{vol_plane}.{wire, time, group_id, charge}
         Pixel returns:
-            inst.{vol_plane}.{py, pz, time, group_id, charge}
+            hits.{vol_plane}.{py, pz, time, group_id, charge}
 
         Plus (both readouts):
-            group_to_track_v{N}, segment_to_group_v{N}, qs_fractions_v{N}
+            group_to_track_v{N}, deposit_to_group_v{N}, qs_fractions_v{N}
         """
         if not self._initted:
             self.h5py_worker_init()
@@ -233,9 +233,10 @@ class JAXTPCInstReader:
             if 'group_to_track' in vol:
                 data_dict[f'group_to_track_v{vol_idx}'] = \
                     vol['group_to_track'][:].astype(np.int32)
-            if 'segment_to_group' in vol:
-                data_dict[f'segment_to_group_v{vol_idx}'] = \
-                    vol['segment_to_group'][:].astype(np.int32)
+            d2g_key = 'deposit_to_group' if 'deposit_to_group' in vol else 'segment_to_group'
+            if d2g_key in vol:
+                data_dict[f'deposit_to_group_v{vol_idx}'] = \
+                    vol[d2g_key][:].astype(np.int32)
             if 'qs_fractions' in vol:
                 data_dict[f'qs_fractions_v{vol_idx}'] = \
                     vol['qs_fractions'][:].astype(np.float32)
@@ -250,7 +251,7 @@ class JAXTPCInstReader:
                 if self.planes != 'all' and plane_label not in self.planes:
                     continue
 
-                prefix = f'inst.{plane_label}'
+                prefix = f'hits.{plane_label}'
                 if self.readout_type == 'pixel':
                     py, pz, times, gids, charges = self._decode_plane_pixel(pg)
                     data_dict[f'{prefix}.py'] = py

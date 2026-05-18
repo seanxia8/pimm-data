@@ -2,7 +2,7 @@
 Detector-specific transforms.
 
 ``PDGToSemantic``: derives semantic labels from per-deposit PDG codes
-in seg data when no labl file is available (fallback path).
+in edep data when no labl file is available (fallback path).
 
 ``RemapSegment``: maps the values in ``data_dict['segment']`` through a
 user-provided ``{old_value: new_value}`` dict, with a default for
@@ -28,12 +28,12 @@ class ApplyToStream:
     """Dispatch a sub-pipeline to a nested sub-dict keyed by ``stream``.
 
     :class:`JAXTPCDataset` emits nested dicts of the form
-    ``{'seg': {'coord': ..., 'segment': ...}, 'inst': {...}, ...}``.
+    ``{'edep': {'coord': ..., 'segment': ...}, 'hits': {...}, ...}``.
     Wrap transforms that hardcode ``'coord'`` / ``'segment'`` in
-    ``ApplyToStream(stream='seg', transforms=[...])`` so they operate
+    ``ApplyToStream(stream='edep', transforms=[...])`` so they operate
     on the sub-dict directly::
 
-        dict(type='ApplyToStream', stream='seg', transforms=[
+        dict(type='ApplyToStream', stream='edep', transforms=[
             dict(type='GridSample', grid_size=0.5),
             dict(type='RandomRotate'),
         ])

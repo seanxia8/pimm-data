@@ -4,38 +4,38 @@ output (``format_version: 3``).
 
 Loads from co-indexed per-modality HDF5 shards:
 
-* ``seg/``    — 3D Geant4 step deposits
-* ``sensor/`` — sparse PMT response (event-level aggregate of ``inst``)
-* ``inst/``   — per-particle PMT hit decomposition
+* ``edep/``   — 3D Geant4 step deposits
+* ``sensor/`` — sparse PMT response (event-level aggregate of ``hits``)
+* ``hits/``   — per-particle PMT hit decomposition
 * ``labl/``   — per-event / per-particle / per-track label tables
 
 Returns a **nested** dict: each loaded modality owns a sub-dict with
 clean, unprefixed keys::
 
     {
-      'seg':    {'coord': (N,3), 'energy': (N,1), 'time': (N,1),
+      'edep':   {'coord': (N,3), 'energy': (N,1), 'time': (N,1),
                  'track_idx': (N,), 'direction': ..., 'beta_start': ...,
                  'n_cherenkov': ..., 'instance': (N,), 'segment': (N,)},
       'sensor': {'coord': (H,3), 'energy': (H,1), 'time': (H,1),
                  'sensor_idx': (H,)},
-      'inst':   {'coord': (E,3), 'energy': (E,1), 'time': (E,1),
+      'hits':   {'coord': (E,3), 'energy': (E,1), 'time': (E,1),
                  'sensor_idx': (E,), 'particle_idx': (E,),
                  'instance': (E,), 'segment': (E,)},
       'labl':   {'event': {...}, 'particle': {...}, 'track': {...}},
       'name': str, 'split': str,
     }
 
-Instance / segment labels (``inst`` and ``seg``) are *particle-level* by
+Instance / segment labels (``hits`` and ``edep``) are *particle-level* by
 default: ``instance = particle_idx`` and ``segment = per_particle.category``.
 For coarser groupings (ancestor-level), use
 ``labl.particle.ancestor_particle_idx`` (or ``labl.track.ancestor_particle_idx``
-for seg) in a downstream transform — this is a one-line lookup, so we keep
+for edep) in a downstream transform — this is a one-line lookup, so we keep
 the dataset free of grouping policy.
 
 Missing modalities have no top-level key. Two modality combinations are
 rejected: ``('labl',)`` alone, and ``('sensor', 'labl')``. ``labl`` is a
-dimension table and needs an instance-bearing modality (``seg`` or
-``inst``) to attach to.
+dimension table and needs an instance-bearing modality (``edep`` or
+``hits``) to attach to.
 
 Registered in :data:`pimm_data.DATASETS`.
 """
@@ -48,14 +48,14 @@ import numpy as np
 
 from .builder import DATASETS
 from .defaults import DefaultDataset
-from .readers.lucid_seg import LUCiDSegReader
+from .readers.lucid_edep import LUCiDEdepReader
 from .readers.lucid_sensor import LUCiDSensorReader
-from .readers.lucid_inst import LUCiDInstReader
+from .readers.lucid_hits import LUCiDHitsReader
 from .readers.lucid_labl import LUCiDLablReader
 
 log = logging.getLogger(__name__)
 
-_VALID_MODALITIES = {'seg', 'sensor', 'inst', 'labl'}
+_VALID_MODALITIES = {'edep', 'sensor', 'hits', 'labl'}
 
 
 @DATASETS.register_module()
@@ -69,16 +69,16 @@ class LUCiDDataset(DefaultDataset):
     split : str
         Split name for file discovery.
     modalities : tuple[str]
-        Any subset of ``{'seg', 'sensor', 'inst', 'labl'}``.
+        Any subset of ``{'edep', 'sensor', 'hits', 'labl'}``.
         ``('labl',)`` and ``('sensor', 'labl')`` are invalid.
     dataset_name : str
-        File prefix (e.g. ``'wc'`` matches ``wc_seg_0000.h5``).
+        File prefix (e.g. ``'wc'`` matches ``wc_edep_0000.h5``).
     min_segments : int
-        Drop events with fewer than this many seg segments (seg only).
+        Drop events with fewer than this many edep segments (edep only).
     include_physics : bool
-        Whether seg emits direction / beta_start / n_cherenkov.
+        Whether edep emits direction / beta_start / n_cherenkov.
     pe_threshold : float
-        Drop inst entries with ``pp_pe <= pe_threshold`` (inst only).
+        Drop hits entries with ``pe <= pe_threshold`` (hits only).
     pmt_positions, pmt_positions_file : optional
         Overrides for sensor geometry — normally the file's
         ``config/sensor_positions`` is used.
@@ -113,14 +113,14 @@ class LUCiDDataset(DefaultDataset):
         self._source_data_root = data_root
         self._source_split = split
 
-        self.seg_reader = None
+        self.edep_reader = None
         self.sensor_reader = None
-        self.inst_reader = None
+        self.hits_reader = None
         self.labl_reader = None
 
-        if 'seg' in self._modalities:
-            self.seg_reader = LUCiDSegReader(
-                data_root=self._modality_root('seg'), split=split,
+        if 'edep' in self._modalities:
+            self.edep_reader = LUCiDEdepReader(
+                data_root=self._modality_root('edep'), split=split,
                 dataset_name=dataset_name, min_segments=min_segments,
                 include_physics=include_physics)
 
@@ -131,9 +131,9 @@ class LUCiDDataset(DefaultDataset):
                 pmt_positions=pmt_positions,
                 pmt_positions_file=pmt_positions_file)
 
-        if 'inst' in self._modalities:
-            self.inst_reader = LUCiDInstReader(
-                data_root=self._modality_root('inst'), split=split,
+        if 'hits' in self._modalities:
+            self.hits_reader = LUCiDHitsReader(
+                data_root=self._modality_root('hits'), split=split,
                 dataset_name=dataset_name, pe_threshold=pe_threshold)
 
         if 'labl' in self._modalities:
@@ -141,10 +141,10 @@ class LUCiDDataset(DefaultDataset):
                 data_root=self._modality_root('labl'), split=split,
                 dataset_name=dataset_name)
 
-        active_readers = [r for r in (self.seg_reader, self.sensor_reader,
-                                      self.inst_reader, self.labl_reader)
+        active_readers = [r for r in (self.edep_reader, self.sensor_reader,
+                                      self.hits_reader, self.labl_reader)
                           if r is not None]
-        self._canonical_reader = (self.seg_reader or self.inst_reader
+        self._canonical_reader = (self.edep_reader or self.hits_reader
                                   or self.sensor_reader or self.labl_reader)
         self._n_events = min(len(r) for r in active_readers)
 
@@ -166,12 +166,12 @@ class LUCiDDataset(DefaultDataset):
         if mods == {'labl'}:
             raise ValueError(
                 "Invalid modality combination ('labl',): labl is a "
-                "dimension table and requires 'seg' or 'inst' to attach to.")
+                "dimension table and requires 'edep' or 'hits' to attach to.")
         if mods == {'sensor', 'labl'}:
             raise ValueError(
                 "Invalid modality combination ('sensor', 'labl'): sensor "
                 "has no particle separation — labl can't be attached. Add "
-                "'inst' or 'seg' to the modalities tuple.")
+                "'hits' or 'edep' to the modalities tuple.")
 
     def _modality_root(self, modality):
         mod_dir = os.path.join(self._source_data_root, modality)
@@ -203,13 +203,13 @@ class LUCiDDataset(DefaultDataset):
             data['sensor'] = self._build_sensor(
                 self.sensor_reader.read_event(real_idx))
 
-        if self.inst_reader is not None:
-            data['inst'] = self._build_inst(
-                self.inst_reader.read_event(real_idx), labl)
+        if self.hits_reader is not None:
+            data['hits'] = self._build_hits(
+                self.hits_reader.read_event(real_idx), labl)
 
-        if self.seg_reader is not None:
-            data['seg'] = self._build_seg(
-                self.seg_reader.read_event(real_idx), labl)
+        if self.edep_reader is not None:
+            data['edep'] = self._build_edep(
+                self.edep_reader.read_event(real_idx), labl)
 
         return data
 
@@ -232,44 +232,44 @@ class LUCiDDataset(DefaultDataset):
             'sensor_idx': sensor_idx,
         }
 
-    def _build_inst(self, raw, labl):
+    def _build_hits(self, raw, labl):
         """Per-particle PMT hit point cloud.
 
         Duplicate points are intentional: same PMT contributed by N
         particles → N rows. ``instance = particle_idx`` tags each row.
         """
-        pp_sensor_idx = raw['pp_sensor_idx']
-        pp_particle_idx = raw['pp_particle_idx']
+        sensor_idx_arr = raw['sensor_idx']
+        particle_idx_arr = raw['particle_idx']
 
         pmt_coord = None
         if self.sensor_reader is not None:
             # Reuse the geometry already loaded by the sensor reader.
             pmt_coord = getattr(self.sensor_reader, '_pmt_positions', None)
         if pmt_coord is None:
-            # Pull directly from the inst file's own config group.
-            pmt_coord = self._inst_sensor_positions()
+            # Pull directly from the hits file's own config group.
+            pmt_coord = self._hits_sensor_positions()
 
         if pmt_coord is not None:
-            coord = pmt_coord[pp_sensor_idx].astype(np.float32)
+            coord = pmt_coord[sensor_idx_arr].astype(np.float32)
         else:
-            coord = pp_sensor_idx.astype(np.float32)[:, None]
+            coord = sensor_idx_arr.astype(np.float32)[:, None]
 
         sub = {
             'coord': coord,
-            'energy': raw['pp_pe'][:, None].astype(np.float32),
-            'time': raw['pp_t'][:, None].astype(np.float32),
-            'sensor_idx': pp_sensor_idx,
-            'particle_idx': pp_particle_idx,
-            'instance': pp_particle_idx.astype(np.int32),
+            'energy': raw['pe'][:, None].astype(np.float32),
+            'time': raw['t'][:, None].astype(np.float32),
+            'sensor_idx': sensor_idx_arr,
+            'particle_idx': particle_idx_arr,
+            'instance': particle_idx_arr.astype(np.int32),
         }
         if labl is not None:
             category = labl['particle'].get('category')
             if category is not None:
                 sub['segment'] = self._lookup_per_particle(
-                    pp_particle_idx, category)
+                    particle_idx_arr, category)
         return sub
 
-    def _build_seg(self, raw, labl):
+    def _build_edep(self, raw, labl):
         """3D deposit cloud decorated with particle-level labels from labl."""
         sub = dict(raw)  # shallow copy; readers emit fresh arrays
         track_idx = sub['track_idx']
@@ -304,13 +304,13 @@ class LUCiDDataset(DefaultDataset):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _inst_sensor_positions(self):
-        """Best-effort fetch of inst's config/sensor_positions.
+    def _hits_sensor_positions(self):
+        """Best-effort fetch of hits's config/sensor_positions.
 
-        The inst file duplicates the sensor geometry; fall back to it
+        The hits file duplicates the sensor geometry; fall back to it
         when no sensor reader is active.
         """
-        reader = self.inst_reader
+        reader = self.hits_reader
         if reader is None:
             return None
         if not reader._initted:
@@ -390,8 +390,8 @@ class LUCiDDataset(DefaultDataset):
         return result_dict
 
     def __del__(self):
-        for attr in ('seg_reader', 'sensor_reader',
-                     'inst_reader', 'labl_reader'):
+        for attr in ('edep_reader', 'sensor_reader',
+                     'hits_reader', 'labl_reader'):
             reader = getattr(self, attr, None)
             if reader is not None:
                 try:

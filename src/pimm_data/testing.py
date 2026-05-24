@@ -380,7 +380,7 @@ def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
 
     # Per-particle
     category = rng.integers(0, 5, size=n_particles).astype(np.int32)
-    containment = rng.uniform(0.0, 1.0, size=n_particles).astype(np.float32)
+    contained = (rng.random(n_particles) > 0.3).astype(bool)
     # Trivial genealogy: each particle's entry is just its own index.
     genealogy_offsets = np.arange(n_particles + 1, dtype=np.int32)
     genealogy_data = np.arange(n_particles, dtype=np.int32)
@@ -409,6 +409,7 @@ def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
     seg_time = rng.uniform(0.0, 100.0, size=n_segments).astype(np.float32)
     beta_start = rng.uniform(0.0, 1.0, size=n_segments).astype(np.float32)
     n_cherenkov_seg = rng.integers(0, 50, size=n_segments).astype(np.int32)
+    contained_seg = (rng.random(n_segments) > 0.2).astype(bool)
 
     # Sensor
     sensor_sensor_idx = rng.integers(0, n_sensors, size=n_hits).astype(
@@ -428,7 +429,7 @@ def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
         edep=dict(
             start=start, end=end, direction=direction, edep=edep,
             time=seg_time, track_idx=seg_track_idx, beta_start=beta_start,
-            n_cherenkov=n_cherenkov_seg,
+            n_cherenkov=n_cherenkov_seg, contained=contained_seg,
         ),
         sensor=dict(
             sensor_idx=sensor_sensor_idx, PE=sensor_pe, T=sensor_t,
@@ -439,8 +440,8 @@ def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
         ),
         labl=dict(
             t0=np.float32(rng.uniform(-1.0, 1.0)),
-            overall_containment=np.float32(rng.uniform(0.5, 1.0)),
-            category=category, containment=containment,
+            event_contained=bool(rng.random() > 0.3),
+            category=category, contained=contained,
             genealogy_data=genealogy_data,
             genealogy_offsets=genealogy_offsets,
             ext_genealogy_data=ext_genealogy_data,
@@ -477,6 +478,7 @@ def _write_lucid_edep(path, events):
             g.create_dataset('dir_z', data=seg['direction'][:, 2])
             g.create_dataset('beta_start', data=seg['beta_start'])
             g.create_dataset('n_cherenkov', data=seg['n_cherenkov'])
+            g.create_dataset('contained', data=seg['contained'])
 
 
 def _write_lucid_sensor(path, events, pmt_positions):
@@ -522,12 +524,12 @@ def _write_lucid_labl(path, events):
 
             pe = g.create_group('per_event')
             pe.create_dataset('t0', data=np.float32(l['t0']))
-            pe.create_dataset('overall_containment',
-                              data=np.float32(l['overall_containment']))
+            pe.create_dataset('contained',
+                              data=np.bool_(l['event_contained']))
 
             pp = g.create_group('per_particle')
             pp.create_dataset('category', data=l['category'])
-            pp.create_dataset('containment', data=l['containment'])
+            pp.create_dataset('contained', data=l['contained'])
             pp.create_dataset('genealogy_data', data=l['genealogy_data'])
             pp.create_dataset('genealogy_offsets', data=l['genealogy_offsets'])
             pp.create_dataset('ext_genealogy_data', data=l['ext_genealogy_data'])

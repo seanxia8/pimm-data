@@ -4,13 +4,20 @@ LUCiDLablReader — per-event labels for LUCiD ``labl/`` HDF5 files
 
 The labl file carries three label scopes:
 
-* ``per_event`` — scalar(s) per event (``t0``, ``overall_containment``)
-* ``per_particle`` — per-particle-index tables (``category``, ``containment``,
+* ``per_event`` — scalar(s) per event (``t0``, ``contained``)
+* ``per_particle`` — per-particle-index tables (``category``, ``contained``,
   genealogy CSR)
 * ``per_track`` — per-Geant4-track tables (``track_id``, ``pdg``,
   ``parent_id``, ``ancestor`` [root ancestor ``track_id``],
   ``particle_idx`` [FK into ``per_particle``], ``interaction``,
   ``initial_energy``, ``n_cherenkov``)
+
+LUCiD also writes a fourth scope, ``per_interaction`` (per-neutrino-vertex
+metadata: ``source_type``, ``t0``, ``vertex_{x,y,z}``, ``n_primaries``,
+``n_particles``, ``neutrino_pdg``, ``neutrino_energy_MeV``, ``contained``,
+and CSR-encoded primary ``track_ids``/``pdgs``/``energies``). It is not
+yet surfaced by this reader — exposing it is a deferred change tracked
+against pile-up workflows that need per-vertex grouping.
 
 Derived columns added by the reader (pure reductions, no training
 semantics):
@@ -28,11 +35,11 @@ to ancestor-level with a single lookup:
 
 Output dict (flat; dataset layer rebuilds nested ``{event, particle, track}``):
 
-    labl_event_t0                         ()
-    labl_event_overall_containment        ()
+    labl_event_t0                         ()       float32
+    labl_event_contained                  ()       bool
 
-    labl_particle_category                (P,) int32
-    labl_particle_containment             (P,) float32
+    labl_particle_category                (P,)     int32
+    labl_particle_contained               (P,)     bool
     labl_particle_genealogy_data          (G,) int32
     labl_particle_genealogy_offsets       (P+1,) int32
     labl_particle_ext_genealogy_data      (Ge,) int32
@@ -60,7 +67,7 @@ log = logging.getLogger(__name__)
 
 
 _PARTICLE_KEYS = (
-    'category', 'containment',
+    'category', 'contained',
     'genealogy_data', 'genealogy_offsets',
     'ext_genealogy_data', 'ext_genealogy_offsets',
 )
@@ -68,7 +75,7 @@ _TRACK_KEYS = (
     'track_id', 'pdg', 'parent_id', 'particle_idx', 'ancestor',
     'interaction', 'initial_energy', 'n_cherenkov',
 )
-_EVENT_KEYS = ('t0', 'overall_containment')
+_EVENT_KEYS = ('t0', 'contained')
 
 _INT_KEYS = {'category', 'genealogy_data', 'genealogy_offsets',
              'ext_genealogy_data', 'ext_genealogy_offsets',
@@ -151,7 +158,11 @@ class LUCiDLablReader:
 
     @staticmethod
     def _cast(arr, key):
-        if key == 'initial_energy' or key == 'containment':
+        # ``contained`` flags are bool in the v3 schema; keep them bool
+        # (saves 4× memory vs float32 and matches LUCiD's writer dtype).
+        if key == 'contained':
+            return arr.astype(bool)
+        if key == 'initial_energy':
             return arr.astype(np.float32)
         if key in _INT_KEYS:
             return arr.astype(np.int32)
@@ -210,8 +221,8 @@ class LUCiDLablReader:
             ev = evt['per_event']
             for k in _EVENT_KEYS:
                 if k in ev:
-                    arr = np.asarray(ev[k][()]).astype(np.float32)
-                    data[f'labl_event_{k}'] = arr
+                    data[f'labl_event_{k}'] = self._cast(
+                        np.asarray(ev[k][()]), k)
 
         pp = evt['per_particle'] if 'per_particle' in evt else None
         n_particles = int(evt.attrs.get('n_particles', 0))

@@ -13,6 +13,7 @@ Output dict:
     energy      (N,1) float32   edep
     time        (N,1) float32
     track_idx   (N,)  int32     FK → labl.per_track
+    contained   (N,)  bool      step start+end both inside detector volume
 
     (include_physics=True adds:)
     direction   (N,3) float32   unit direction
@@ -145,6 +146,8 @@ class LUCiDEdepReader:
             'time': evt['time'][:].astype(np.float32)[:, None],
             'track_idx': evt['track_idx'][:].astype(np.int32),
         }
+        if 'contained' in evt:
+            data['contained'] = evt['contained'][:].astype(bool)
 
         if self.include_physics:
             direction = np.stack([evt['dir_x'][:].astype(np.float32),

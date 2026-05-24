@@ -459,9 +459,46 @@ bytes) instead of pickling the full array. Without tensor output,
 |---|---|
 | > 200 ms | 2 |
 | 100–200 ms | 4 |
-| < 100 ms | 6 |
+| < 100 ms | 8+ |
 
-Per-worker memory is ~240 MB. `prefetch_factor=2` (default) is sufficient.
+Per-worker memory is ~240 MB. **Set `prefetch_factor=1`** — the
+PyTorch default of 2 costs ~25% throughput and 3× the p95 latency
+jitter on LUCiD-style workloads (workers can keep up without buffering
+ahead, so extra buffered batches just add memory pressure and queue
+overhead). **Never use `num_workers=1`** — it pays full IPC cost with
+no concurrency and is uniformly slower than `num_workers=0`.
+
+Empirical numbers — LUCiD WAND `config_000013` (101k events, A100 box):
+
+| workers | batch | prefetch | samples/s | ms/batch | notes |
+|---|---|---|---|---|---|
+| 0  | 32 | —  | 113  | 282 | single-process baseline |
+| 4  | 32 | 1  | 333  |  96 | |
+| 8  | 32 | 1  | 491  |  65 | |
+| 16 | 32 | 1  | 821  |  39 | |
+| **20** | **32** | **1** | **967** | **33** | **peak operating point** |
+| 24 | 32 | 1  | 855  |  37 | past the knee; oversubscription |
+
+The single-process per-event cost is 91% HDF5 I/O; pimm-data wrappers
++ transforms add ~9%. Past ~20 workers the cap shifts from the
+filesystem to per-batch tensor IPC across the worker→main queue.
+See `scripts/` for the diagnostic tools that produced these numbers.
+
+### Profiling and benchmarking
+
+Three scripts under `scripts/` cover loader performance from
+complementary angles:
+
+* **`benchmark_loader.py`** — sweep `(num_workers, batch_size, prefetch)`
+  on real data and emit latency / throughput plots with IQR error bars.
+  Defaults reproduce the table above.
+* **`profile_loader.py`** — per-stage breakdown of `__getitem__`
+  (raw h5py I/O vs reader wrappers vs dataset assembly vs `Collect`),
+  plus a cProfile hotspot dump.
+* **`profile_scaling.py`** — isolates whether the loader ceiling is
+  filesystem bandwidth or PyTorch DataLoader IPC by comparing raw
+  `multiprocessing.Pool`, `ThreadPoolExecutor`, and same-shard
+  contention scaling.
 
 ### Batch output
 

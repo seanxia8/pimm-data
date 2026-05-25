@@ -308,10 +308,10 @@ class JAXTPCDataset(DefaultDataset):
         planes, coord, energy, plane_id, raw = self._merge_plane_dotted(
             hits_raw, prefix='hits', value_key='charge',
             coord_keys=coord_keys, extra_keys=('group_id',))
-        # instance = per-entry group_id
-        instance = np.concatenate(
-            [raw[p]['group_id'] for p in planes], axis=0
-        ).astype(np.int32) if planes else np.zeros(0, dtype=np.int32)
+        # instance = per-entry group_id (already int32 from the reader, so
+        # no astype copy needed)
+        instance = (np.concatenate([raw[p]['group_id'] for p in planes], axis=0)
+                    if planes else np.zeros(0, dtype=np.int32))
 
         sub = {
             'coord': coord, 'energy': energy, 'plane_id': plane_id,
@@ -379,30 +379,37 @@ class JAXTPCDataset(DefaultDataset):
             k.split('.')[1] for k in raw_dict
             if k.startswith(prefix + '.') and k.endswith('.' + first_key)
         ))
-        all_coord, all_val, all_plane_id = [], [], []
+        # Gather per-plane columns + sizes (and build raw_nested) in one pass,
+        # then fill preallocated output arrays per-plane. This avoids the
+        # np.stack-per-plane + concatenate-across-planes copies (the single
+        # biggest reader op on large events); the slice assignment casts
+        # int -> float32 in place.
         raw_nested = {}
-        for i, plane in enumerate(planes):
+        plane_cols, sizes = [], []
+        for plane in planes:
             cols_arrays = [raw_dict[f'{prefix}.{plane}.{ck}']
                            for ck in coord_keys]
             value = raw_dict[f'{prefix}.{plane}.{value_key}']
-            n = len(cols_arrays[0])
-            all_coord.append(np.stack(cols_arrays, axis=1).astype(np.float32))
-            all_val.append(value[:, None].astype(np.float32))
-            all_plane_id.append(np.full((n, 1), i, dtype=np.int32))
+            plane_cols.append((cols_arrays, value))
+            sizes.append(len(cols_arrays[0]))
             cols = {ck: arr for ck, arr in zip(coord_keys, cols_arrays)}
             cols[value_key] = value
             for ek in extra_keys:
                 cols[ek] = raw_dict[f'{prefix}.{plane}.{ek}']
             raw_nested[plane] = cols
 
-        if planes:
-            coord = np.concatenate(all_coord, axis=0)
-            energy = np.concatenate(all_val, axis=0)
-            plane_id = np.concatenate(all_plane_id, axis=0)
-        else:
-            coord = np.zeros((0, coord_dim), dtype=np.float32)
-            energy = np.zeros((0, 1), dtype=np.float32)
-            plane_id = np.zeros((0, 1), dtype=np.int32)
+        N = sum(sizes)
+        coord = np.empty((N, coord_dim), dtype=np.float32)
+        energy = np.empty((N, 1), dtype=np.float32)
+        plane_id = np.empty((N, 1), dtype=np.int32)
+        off = 0
+        for i, ((cols_arrays, value), n) in enumerate(zip(plane_cols, sizes)):
+            sl = slice(off, off + n)
+            for j, arr in enumerate(cols_arrays):
+                coord[sl, j] = arr
+            energy[sl, 0] = value
+            plane_id[sl, 0] = i
+            off += n
 
         return planes, coord, energy, plane_id, raw_nested
 

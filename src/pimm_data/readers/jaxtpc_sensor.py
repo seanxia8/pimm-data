@@ -75,8 +75,13 @@ class JAXTPCSensorReader:
         for h5_path in self.h5_files:
             try:
                 with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
-                    n_events = int(f['config'].attrs['n_events'])
-                    index = np.arange(n_events, dtype=np.int64)
+                    # Index from event groups actually present, not
+                    # arange(n_events): production may skip an event (e.g.
+                    # capacity overflow), leaving a gap with n_events
+                    # unchanged — arange would then KeyError at read time.
+                    index = np.array(sorted(
+                        int(k.rsplit('_', 1)[1]) for k in f.keys()
+                        if k.startswith('event_')), dtype=np.int64)
             except Exception as e:
                 log.warning("Error processing %s: %s", h5_path, e)
                 index = np.array([], dtype=np.int64)
@@ -174,8 +179,10 @@ class JAXTPCSensorReader:
         wire_start = int(g.attrs['wire_start'])
         time_start = int(g.attrs['time_start'])
 
-        wire = wire_start + np.cumsum(g['delta_wire'][:]).astype(np.int32)
-        time = time_start + np.cumsum(g['delta_time'][:]).astype(np.int32)
+        # cumsum directly into int32 + in-place add avoids the wide-int64
+        # accumulator and the extra full-size copies of the old expression.
+        wire = np.cumsum(g['delta_wire'][:], dtype=np.int32); wire += wire_start
+        time = np.cumsum(g['delta_time'][:], dtype=np.int32); time += time_start
 
         values = self._decode_values(g)
         return wire, time, values
@@ -186,9 +193,9 @@ class JAXTPCSensorReader:
         pz_start = int(g.attrs['pz_start'])
         time_start = int(g.attrs['time_start'])
 
-        py = py_start + np.cumsum(g['delta_py'][:]).astype(np.int32)
-        pz = pz_start + np.cumsum(g['delta_pz'][:]).astype(np.int32)
-        time = time_start + np.cumsum(g['delta_time'][:]).astype(np.int32)
+        py = np.cumsum(g['delta_py'][:], dtype=np.int32); py += py_start
+        pz = np.cumsum(g['delta_pz'][:], dtype=np.int32); pz += pz_start
+        time = np.cumsum(g['delta_time'][:], dtype=np.int32); time += time_start
 
         values = self._decode_values(g)
         return py, pz, time, values
@@ -196,10 +203,10 @@ class JAXTPCSensorReader:
     def _decode_values(self, g):
         """Shared value decoding (handles uint16 digitization)."""
         raw_values = g['values'][:]
+        vals = raw_values.astype(np.float32)
         if self.decode_digitization and raw_values.dtype == np.uint16:
-            ped = int(g.attrs.get('pedestal', 0))
-            return raw_values.astype(np.float32) - ped
-        return raw_values.astype(np.float32)
+            vals -= int(g.attrs.get('pedestal', 0))  # in-place, no extra copy
+        return vals
 
     def read_event(self, idx):
         """Read one event, return dict with plane-namespaced sparse arrays.

@@ -99,7 +99,14 @@ class JAXTPCEdepReader:
                                 valid.append(i)
                         index = np.array(valid, dtype=np.int64)
                     else:
-                        index = np.arange(n_events, dtype=np.int64)
+                        # Index from event groups actually present, not
+                        # arange(n_events): production may skip an event
+                        # (capacity overflow) leaving a gap — arange would
+                        # KeyError at read time. (The min_deposits>0 branch
+                        # above is already gap-tolerant.)
+                        index = np.array(sorted(
+                            int(k.rsplit('_', 1)[1]) for k in f.keys()
+                            if k.startswith('event_')), dtype=np.int64)
 
             except Exception as e:
                 log.warning("Error processing %s: %s", h5_path, e)
@@ -178,8 +185,11 @@ class JAXTPCEdepReader:
                            vg.attrs['pos_origin_y'],
                            vg.attrs['pos_origin_z']], dtype=np.float32)
 
+        pos = vg['positions'][:].astype(np.float32)
+        pos *= step       # in-place: avoid the *step and +origin temporaries
+        pos += origin
         d = {
-            'coord': vg['positions'][:].astype(np.float32) * step + origin,
+            'coord': pos,
             'energy': vg['de'][:].astype(np.float32),
             'volume_id': np.full(n, vol_idx, dtype=np.int32),
         }
@@ -201,8 +211,11 @@ class JAXTPCEdepReader:
                            evt.attrs['pos_origin_y'],
                            evt.attrs['pos_origin_z']], dtype=np.float32)
 
+        pos = evt['positions'][:].astype(np.float32)
+        pos *= step
+        pos += origin
         d = {
-            'coord': evt['positions'][:].astype(np.float32) * step + origin,
+            'coord': pos,
             'energy': evt['de'][:].astype(np.float32),
             'volume_id': np.full(n, vol_idx, dtype=np.int32),
         }
@@ -223,7 +236,9 @@ class JAXTPCEdepReader:
         data_dict = {}
         for k in keys:
             arrays = [v[k] for v in vol_arrays if k in v]
-            combined = np.concatenate(arrays, axis=0)
+            # Single-volume (common with volume= filter): skip the
+            # concatenate, which would otherwise copy every array.
+            combined = arrays[0] if len(arrays) == 1 else np.concatenate(arrays, axis=0)
             if k == 'coord':
                 data_dict[k] = combined
             elif k in ('energy', 'dx', 'theta', 'phi', 't0_us',

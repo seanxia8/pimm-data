@@ -171,7 +171,9 @@ def _build_jaxtpc_plane(rng, n_groups, n_pixels_per_plane, readout_type='wire'):
     center_times = rng.integers(50, 2000, size=n_groups).astype(np.int16)
     peak_charges = rng.uniform(1e3, 5e4, size=n_groups).astype(np.float32)
     delta_times = rng.integers(-5, 6, size=total).astype(np.int8)
-    charges_u16 = rng.integers(1, 65535, size=total, dtype=np.uint16)
+    # Charge field is readout-specific (matches production writers):
+    # wire -> charges_u16 (/65535), pixel -> charges_i16 (signed, /32767).
+    # Added in the per-readout branch below.
 
     # Delta-encoded sparse for the sensor file. Strictly ordered so
     # cumsum reconstructs a monotone stream. Made longer than the hits
@@ -187,13 +189,14 @@ def _build_jaxtpc_plane(rng, n_groups, n_pixels_per_plane, readout_type='wire'):
     out = dict(
         group_ids=group_ids, group_sizes=group_sizes,
         center_times=center_times, peak_charges=peak_charges,
-        delta_times=delta_times, charges_u16=charges_u16,
+        delta_times=delta_times,
         delta_time=delta_time, values=values,
         time_start=int(rng.integers(0, 100)),
         pedestal=0,
     )
 
     if readout_type == 'pixel':
+        out['charges_i16'] = rng.integers(1, 32767, size=total, dtype=np.int16)
         out['center_py'] = rng.integers(10, 200, size=n_groups).astype(np.int16)
         out['center_pz'] = rng.integers(10, 200, size=n_groups).astype(np.int16)
         out['delta_py'] = rng.integers(-2, 3, size=total).astype(np.int8)
@@ -209,6 +212,7 @@ def _build_jaxtpc_plane(rng, n_groups, n_pixels_per_plane, readout_type='wire'):
         out['py_start'] = int(rng.integers(0, 100))
         out['pz_start'] = int(rng.integers(0, 100))
     else:
+        out['charges_u16'] = rng.integers(1, 65535, size=total, dtype=np.uint16)
         out['center_wires'] = rng.integers(10, 500, size=n_groups).astype(np.int16)
         out['delta_wires'] = rng.integers(-3, 4, size=total).astype(np.int8)
         out['delta_wire'] = np.concatenate([
@@ -271,10 +275,11 @@ def _write_jaxtpc_sensor(path, events, readout_type='wire'):
 
 def _write_jaxtpc_hits(path, events, readout_type='wire'):
     shared_keys = ('group_ids', 'group_sizes', 'center_times',
-                   'peak_charges', 'delta_times', 'charges_u16')
-    readout_keys = (('center_py', 'center_pz', 'delta_py', 'delta_pz')
-                    if readout_type == 'pixel'
-                    else ('center_wires', 'delta_wires'))
+                   'peak_charges', 'delta_times')
+    readout_keys = (
+        ('center_py', 'center_pz', 'delta_py', 'delta_pz', 'charges_i16')
+        if readout_type == 'pixel'
+        else ('center_wires', 'delta_wires', 'charges_u16'))
     with h5py.File(path, 'w') as f:
         cfg = f.create_group('config')
         cfg.attrs['n_events'] = len(events)

@@ -6,6 +6,8 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "h5py",
+    "hdf5plugin",  # blosc/zstd/lz4 HDF5 filters — required to read JAXTPC
+                   # production output (default codec is blosc-zstd)
     "torch",
 ]
 

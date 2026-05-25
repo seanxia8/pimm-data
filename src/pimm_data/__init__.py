@@ -5,6 +5,14 @@ Imports are ordered so that registering side-effects populate the
 downstream looks them up.
 """
 
+# Register blosc/zstd/lz4 HDF5 filters at import so production output
+# written with those codecs (run_batch --codec, default blosc-zstd) is
+# transparently readable. No-op if hdf5plugin isn't installed.
+try:
+    import hdf5plugin  # noqa: F401
+except ImportError:
+    pass
+
 # Registries + build function
 from ._registry import Registry, build_from_cfg
 from .builder import DATASETS, build_dataset

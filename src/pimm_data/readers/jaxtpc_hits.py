@@ -75,8 +75,13 @@ class JAXTPCHitsReader:
         for h5_path in self.h5_files:
             try:
                 with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
-                    n_events = int(f['config'].attrs['n_events'])
-                    index = np.arange(n_events, dtype=np.int64)
+                    # Index from event groups actually present, not
+                    # arange(n_events): production may skip an event (e.g.
+                    # capacity overflow), leaving a gap with n_events
+                    # unchanged — arange would then KeyError at read time.
+                    index = np.array(sorted(
+                        int(k.rsplit('_', 1)[1]) for k in f.keys()
+                        if k.startswith('event_')), dtype=np.int64)
             except Exception as e:
                 log.warning("Error processing %s: %s", h5_path, e)
                 index = np.array([], dtype=np.int64)
@@ -157,13 +162,17 @@ class JAXTPCHitsReader:
             empty = np.array([], dtype=np.int32)
             return empty, empty, empty, np.array([], dtype=np.float32)
 
-        wires = (np.repeat(center_wires, group_sizes).astype(np.int32)
-                 + delta_wires.astype(np.int32))
-        times = (np.repeat(center_times, group_sizes).astype(np.int32)
-                 + delta_times.astype(np.int32))
+        # In-place ops avoid full-size int32/float32 temporaries (the
+        # explicit .astype + separate add/mul/div allocated several copies
+        # of millions of entries per plane).
+        wires = np.repeat(center_wires, group_sizes).astype(np.int32)
+        wires += delta_wires
+        times = np.repeat(center_times, group_sizes).astype(np.int32)
+        times += delta_times
         gids = np.repeat(group_ids, group_sizes)
-        charges = (np.repeat(peak_charges, group_sizes)
-                   * charges_u16.astype(np.float32) / 65535.0)
+        charges = np.repeat(peak_charges, group_sizes)  # float32
+        charges *= charges_u16
+        charges *= np.float32(1.0 / 65535.0)
 
         return wires, times, gids, charges
 
@@ -182,22 +191,26 @@ class JAXTPCHitsReader:
         delta_py = g['delta_py'][:]
         delta_pz = g['delta_pz'][:]
         delta_times = g['delta_times'][:]
-        charges_u16 = g['charges_u16'][:]
+        # Pixel writer emits signed charges_i16 normalized by 32767 (see
+        # encode_correspondence_csr_pixel); wire uses charges_u16 / 65535.
+        charges_i16 = g['charges_i16'][:]
 
         G = len(group_ids)
         if G == 0:
             empty = np.array([], dtype=np.int32)
             return empty, empty, empty, empty, np.array([], dtype=np.float32)
 
-        py = (np.repeat(center_py, group_sizes).astype(np.int32)
-              + delta_py.astype(np.int32))
-        pz = (np.repeat(center_pz, group_sizes).astype(np.int32)
-              + delta_pz.astype(np.int32))
-        times = (np.repeat(center_times, group_sizes).astype(np.int32)
-                 + delta_times.astype(np.int32))
+        # In-place ops avoid full-size int32/float32 temporaries.
+        py = np.repeat(center_py, group_sizes).astype(np.int32)
+        py += delta_py
+        pz = np.repeat(center_pz, group_sizes).astype(np.int32)
+        pz += delta_pz
+        times = np.repeat(center_times, group_sizes).astype(np.int32)
+        times += delta_times
         gids = np.repeat(group_ids, group_sizes)
-        charges = (np.repeat(peak_charges, group_sizes)
-                   * charges_u16.astype(np.float32) / 65535.0)
+        charges = np.repeat(peak_charges, group_sizes)  # float32
+        charges *= charges_i16
+        charges *= np.float32(1.0 / 32767.0)
 
         return py, pz, times, gids, charges
 

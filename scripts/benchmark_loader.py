@@ -44,18 +44,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from pimm_data import LUCiDDataset
-
-
-# Minimum realistic transform: extract one stream and tensorize.
-# This is the bare requirement for tensor-batched training; heavier
-# augmentations (GridSample, jitter, etc.) are model-dependent and
-# would conflate loader throughput with transform throughput.
-DEFAULT_TRANSFORM = [
-    dict(type='Collect', stream='hits',
-         keys=['coord', 'energy', 'time'],
-         feat_keys=['energy', 'time']),
-]
+import _profile_common as pc
 
 
 def _list_of_dicts_collate(batch):
@@ -63,12 +52,8 @@ def _list_of_dicts_collate(batch):
     return batch
 
 
-def _build_dataset(data_root):
-    return LUCiDDataset(
-        data_root=data_root, split='', dataset_name='wc',
-        modalities=('edep', 'sensor', 'hits', 'labl'),
-        transform=DEFAULT_TRANSFORM,
-    )
+def _build_dataset(dataset, data_root, split):
+    return pc.build_dataset(dataset, data_root, split=split)
 
 
 def _warmup_filesystem(ds, n_events=200):
@@ -102,8 +87,21 @@ def _loader(ds, *, batch_size, num_workers, prefetch_factor,
 
 
 def _time_cell(ds, *, batch_size, num_workers, prefetch_factor,
-               persistent_workers, n_warmup, n_timed):
-    """Run one (config) cell. Returns dict of timings + throughputs."""
+               persistent_workers, n_warmup, n_timed=None,
+               target_events=None, max_seconds=None, return_times=False):
+    """Run one (config) cell. Returns a timings dict (and the raw per-batch
+    times in ms if ``return_times``).
+
+    The timed phase stops at whichever comes first: ``n_timed`` /
+    ``target_events`` batches collected, ``max_seconds`` of wall time, or the
+    end of one epoch. ``target_events`` is converted to a batch count via
+    ``ceil(target_events / batch_size)`` so every batch size gets comparable
+    statistical power (same number of events sampled).
+    """
+    target_batches = n_timed
+    if target_batches is None and target_events is not None:
+        target_batches = max(1, int(np.ceil(target_events / batch_size)))
+
     with _loader(ds, batch_size=batch_size, num_workers=num_workers,
                  prefetch_factor=prefetch_factor,
                  persistent_workers=persistent_workers) as dl:
@@ -112,36 +110,47 @@ def _time_cell(ds, *, batch_size, num_workers, prefetch_factor,
         t_first = time.perf_counter()
         for _ in range(n_warmup):
             next(it)
-        t_after_warmup = time.perf_counter()
-        first_batch_overhead = t_after_warmup - t_first  # incl. spinup
+        first_batch_overhead = time.perf_counter() - t_first  # incl. spinup
 
         # Timed phase
         per_batch = []
         t_phase = time.perf_counter()
-        for _ in range(n_timed):
+        while True:
+            if target_batches is not None and len(per_batch) >= target_batches:
+                break
+            if max_seconds is not None and (time.perf_counter() - t_phase) >= max_seconds:
+                break
             t0 = time.perf_counter()
-            next(it)
+            try:
+                next(it)
+            except StopIteration:
+                break  # exhausted the dataset (one epoch)
             per_batch.append(time.perf_counter() - t0)
         phase_dt = time.perf_counter() - t_phase
 
     per_batch_ms = 1000 * np.asarray(per_batch)
-    return dict(
+    n = len(per_batch)
+    result = dict(
         batch_size=batch_size,
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
         persistent_workers=persistent_workers,
-        n_timed=n_timed,
+        n_timed=n,
+        events_timed=n * batch_size,
         warmup_total_s=first_batch_overhead,
         phase_total_s=phase_dt,
-        batches_per_s=n_timed / phase_dt,
-        samples_per_s=n_timed * batch_size / phase_dt,
-        per_batch_ms_mean=float(per_batch_ms.mean()),
-        per_batch_ms_std=float(per_batch_ms.std()),
-        per_batch_ms_p25=float(np.percentile(per_batch_ms, 25)),
-        per_batch_ms_p50=float(np.percentile(per_batch_ms, 50)),
-        per_batch_ms_p75=float(np.percentile(per_batch_ms, 75)),
-        per_batch_ms_p95=float(np.percentile(per_batch_ms, 95)),
+        batches_per_s=n / phase_dt if phase_dt else 0.0,
+        samples_per_s=n * batch_size / phase_dt if phase_dt else 0.0,
+        per_batch_ms_mean=float(per_batch_ms.mean()) if n else 0.0,
+        per_batch_ms_std=float(per_batch_ms.std()) if n else 0.0,
+        per_batch_ms_p25=float(np.percentile(per_batch_ms, 25)) if n else 0.0,
+        per_batch_ms_p50=float(np.percentile(per_batch_ms, 50)) if n else 0.0,
+        per_batch_ms_p75=float(np.percentile(per_batch_ms, 75)) if n else 0.0,
+        per_batch_ms_p95=float(np.percentile(per_batch_ms, 95)) if n else 0.0,
     )
+    if return_times:
+        return result, per_batch_ms
+    return result
 
 
 def _print_table(rows, fixed=()):
@@ -181,14 +190,52 @@ def _save_csv(rows, path):
     print(f'wrote {path}')
 
 
-def _plot_lines(rows, out_prefix, title_suffix):
-    """Two line plots: latency vs batch_size and throughput vs batch_size,
-    one line per num_workers, asymmetric error bars from per-batch IQR.
+def _load_csv(path):
+    """Load a timings CSV back into row dicts, casting numeric columns."""
+    int_cols = {'batch_size', 'num_workers', 'prefetch_factor', 'n_timed'}
+    rows = []
+    with open(path, newline='') as f:
+        for r in csv.DictReader(f):
+            out = {}
+            for k, v in r.items():
+                if k in int_cols:
+                    out[k] = int(float(v))
+                elif k == 'persistent_workers':
+                    out[k] = v == 'True'
+                else:
+                    try:
+                        out[k] = float(v)
+                    except (ValueError, TypeError):
+                        out[k] = v
+            rows.append(out)
+    return rows
+
+
+def _title_suffix(args):
+    """'· dataset: root[/split]  ·  prefetch_factor=N' for plot titles."""
+    loc = os.path.basename(args.data_root)
+    if args.split:
+        loc += f'/{args.split}'
+    return f'·  {args.dataset}: {loc}  ·  prefetch_factor={args.prefetch_factor}'
+
+
+def _plot_lines(rows, out_prefix, title_suffix, latency_ymax=None):
+    """Two figures, one line per num_workers with a shaded IQR band:
+
+      * ``{prefix}_latency.png``    — per-sample latency [ms]
+        (per-batch latency / batch_size, so cells with different batch
+        sizes are directly comparable)
+      * ``{prefix}_throughput.png`` — throughput [samples / s]
+
+    The band spans the p25–p75 inter-quartile range of per-batch timings
+    (propagated to per-sample / throughput); the line is the median.
     """
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+
     workers = sorted({r['num_workers'] for r in rows})
+    batch_sizes = sorted({r['batch_size'] for r in rows})
     cmap = matplotlib.colormaps['viridis']
     colors = [cmap(i / max(len(workers) - 1, 1)) for i in range(len(workers))]
 
@@ -200,83 +247,147 @@ def _plot_lines(rows, out_prefix, title_suffix):
         'axes.spines.top': False,
         'axes.spines.right': False,
         'axes.grid': True,
-        'grid.alpha': 0.25,
-        'grid.linestyle': '--',
-        'grid.color': '#999',
+        'grid.alpha': 0.3,
+        'grid.linewidth': 0.6,
         'axes.axisbelow': True,
-        'figure.dpi': 100,
-        'savefig.dpi': 160,
+        'legend.frameon': False,
+        'figure.dpi': 120,
+        'savefig.dpi': 200,
         'savefig.bbox': 'tight',
     })
 
-    # --- Plot 1: per-batch latency ---
-    fig, ax = plt.subplots(figsize=(8.5, 5.5))
-    for w, color in zip(workers, colors):
-        cells = sorted([r for r in rows if r['num_workers'] == w],
-                       key=lambda r: r['batch_size'])
-        xs = np.array([r['batch_size'] for r in cells])
-        med = np.array([r['per_batch_ms_p50'] for r in cells])
-        lo = med - np.array([r['per_batch_ms_p25'] for r in cells])
-        hi = np.array([r['per_batch_ms_p75'] for r in cells]) - med
-        ax.errorbar(xs, med, yerr=np.vstack([lo, hi]),
-                    label=f'workers={w}', color=color,
-                    marker='o', markersize=5, linewidth=1.6,
-                    capsize=3, capthick=1.2, elinewidth=1.0, alpha=0.95)
-    ax.set_xscale('log', base=2)
-    ax.set_xticks(sorted({r['batch_size'] for r in rows}))
-    ax.set_xticklabels([str(b) for b in sorted({r['batch_size'] for r in rows})])
-    ax.set_xlabel('batch_size')
-    ax.set_ylabel('per-batch latency [ms]  (median, IQR bars)')
-    ax.set_title(f'LUCiDDataset per-batch latency {title_suffix}')
-    ax.legend(title='num_workers', loc='upper left', frameon=True,
-              ncol=2 if len(workers) <= 6 else 3, fontsize=9)
-    ax.set_ylim(bottom=0)
-    fig.tight_layout()
-    path = f'{out_prefix}_latency.png'
-    fig.savefig(path)
-    plt.close(fig)
-    print(f'wrote {path}')
+    def _panel(y_of, ylabel, title, path, ymax=None, clamp_median=False):
+        fig, ax = plt.subplots(figsize=(8.0, 5.0))
+        max_med = 0.0
+        for w, color in zip(workers, colors):
+            cells = sorted([r for r in rows if r['num_workers'] == w],
+                           key=lambda r: r['batch_size'])
+            xs = np.array([r['batch_size'] for r in cells], dtype=float)
+            med, lo, hi = y_of(cells, xs)
+            max_med = max(max_med, float(np.max(med)))
+            ax.fill_between(xs, lo, hi, color=color, alpha=0.15, linewidth=0)
+            ax.plot(xs, med, color=color, marker='o', markersize=5,
+                    linewidth=1.9, alpha=0.95, label=f'{w}')
+        ax.set_xscale('log', base=2)
+        ax.set_xticks(batch_sizes)
+        ax.set_xticklabels([str(b) for b in batch_sizes])
+        ax.set_xlabel('batch size')
+        ax.set_ylabel(ylabel)
+        ax.set_title(title, loc='left', fontweight='bold')
+        # Frame to the median lines (+15% headroom) so a few high-variance
+        # configs' IQR bands clip at the top instead of stretching the axis.
+        if ymax is not None:
+            ax.set_ylim(0, ymax)
+        elif clamp_median and max_med > 0:
+            ax.set_ylim(0, max_med * 1.15)
+        else:
+            ax.set_ylim(bottom=0)
+        ax.margins(x=0.03)
+        leg = ax.legend(title='num_workers', loc='best', fontsize=9,
+                        ncol=2 if len(workers) > 4 else 1,
+                        labelspacing=0.3, handlelength=1.6)
+        leg.get_title().set_fontsize(9)
+        fig.tight_layout()
+        fig.savefig(path)
+        plt.close(fig)
+        print(f'wrote {path}')
 
-    # --- Plot 2: throughput ---
-    fig, ax = plt.subplots(figsize=(8.5, 5.5))
-    for w, color in zip(workers, colors):
-        cells = sorted([r for r in rows if r['num_workers'] == w],
-                       key=lambda r: r['batch_size'])
-        xs = np.array([r['batch_size'] for r in cells])
-        # Convert per-batch IQR latency to throughput uncertainty.
-        # samples/s = batch_size / (batch_time_s). Use IQR endpoints to
-        # get matched throughput bounds (slow batch → low samples/s).
-        thr_med = xs / (np.array([r['per_batch_ms_p50'] for r in cells]) / 1000)
-        thr_lo  = xs / (np.array([r['per_batch_ms_p75'] for r in cells]) / 1000)
-        thr_hi  = xs / (np.array([r['per_batch_ms_p25'] for r in cells]) / 1000)
-        yerr = np.vstack([thr_med - thr_lo, thr_hi - thr_med])
-        ax.errorbar(xs, thr_med, yerr=yerr,
-                    label=f'workers={w}', color=color,
-                    marker='o', markersize=5, linewidth=1.6,
-                    capsize=3, capthick=1.2, elinewidth=1.0, alpha=0.95)
-    ax.set_xscale('log', base=2)
-    ax.set_xticks(sorted({r['batch_size'] for r in rows}))
-    ax.set_xticklabels([str(b) for b in sorted({r['batch_size'] for r in rows})])
-    ax.set_xlabel('batch_size')
-    ax.set_ylabel('throughput [samples / s]  (median, IQR bars)')
-    ax.set_title(f'LUCiDDataset throughput {title_suffix}')
-    ax.legend(title='num_workers', loc='upper left', frameon=True,
-              ncol=2 if len(workers) <= 6 else 3, fontsize=9)
-    ax.set_ylim(bottom=0)
+    # per-sample latency: per-batch percentiles divided by batch size
+    def _latency(cells, xs):
+        p50 = np.array([r['per_batch_ms_p50'] for r in cells])
+        p25 = np.array([r['per_batch_ms_p25'] for r in cells])
+        p75 = np.array([r['per_batch_ms_p75'] for r in cells])
+        return p50 / xs, p25 / xs, p75 / xs
+
+    # throughput band from matched IQR latency endpoints
+    # (slow p75 batch → low samples/s, fast p25 batch → high samples/s)
+    def _throughput(cells, xs):
+        med = xs / (np.array([r['per_batch_ms_p50'] for r in cells]) / 1000)
+        lo  = xs / (np.array([r['per_batch_ms_p75'] for r in cells]) / 1000)
+        hi  = xs / (np.array([r['per_batch_ms_p25'] for r in cells]) / 1000)
+        return med, lo, hi
+
+    _panel(_latency, 'per-sample latency [ms]  (median, IQR band)',
+           f'Per-sample latency  {title_suffix}', f'{out_prefix}_latency.png',
+           ymax=latency_ymax, clamp_median=True)
+    _panel(_throughput, 'throughput [samples / s]  (median, IQR band)',
+           f'Throughput  {title_suffix}', f'{out_prefix}_throughput.png')
+
+
+def _plot_hist(times_ms, num_workers, batch_size, title_suffix, out_path,
+               bins=40, logx=False):
+    """Histogram of per-batch latency [ms] for one (workers, batch) cell.
+
+    Shows the full timing distribution — the shape of the right tail that
+    drives the IQR band — with median / mean / p95 marked.
+
+    ``logx`` uses a log x-axis with log-spaced bins, which is the right
+    view for a heavy-tailed latency distribution: the dense bulk near the
+    median and the long slow-event tail are both legible on one plot.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    times_ms = np.asarray(times_ms, dtype=float)
+    n = len(times_ms)
+    med = float(np.median(times_ms))
+    mean = float(times_ms.mean())
+    p95 = float(np.percentile(times_ms, 95))
+    cv = float(times_ms.std() / mean) if mean else float('nan')
+
+    plt.rcParams.update({
+        'font.family': 'DejaVu Sans', 'font.size': 11,
+        'axes.titlesize': 12.5, 'axes.labelsize': 12,
+        'axes.spines.top': False, 'axes.spines.right': False,
+        'axes.grid': True, 'grid.alpha': 0.3, 'grid.linewidth': 0.6,
+        'axes.axisbelow': True, 'legend.frameon': False,
+        'figure.dpi': 120, 'savefig.dpi': 200, 'savefig.bbox': 'tight',
+    })
+    fig, ax = plt.subplots(figsize=(8.0, 5.0))
+
+    if logx:
+        lo = max(1.0, float(times_ms.min()) * 0.9)
+        hi = float(times_ms.max()) * 1.1
+        bin_edges = np.logspace(np.log10(lo), np.log10(hi), bins + 1)
+        ax.set_xscale('log')
+        ax.set_xlim(lo, hi)
+    else:
+        bin_edges = bins
+        ax.set_xlim(left=0)
+    ax.hist(times_ms, bins=bin_edges, color='#3b6fb0', alpha=0.85,
+            edgecolor='white', linewidth=0.4)
+    for val, c, lab in [(med, '#1a1a1a', f'median  {med:.0f} ms'),
+                        (mean, '#d1495b', f'mean  {mean:.0f} ms'),
+                        (p95, '#e8a33d', f'p95  {p95:.0f} ms')]:
+        ax.axvline(val, color=c, linestyle='--', linewidth=1.7, label=lab)
+    ax.set_xlabel('per-batch latency [ms]' + ('  (log scale)' if logx else ''))
+    ax.set_ylabel('count  (batches)')
+    ax.set_title(f'Per-batch latency distribution  ·  workers={num_workers}, '
+                 f'batch={batch_size}\n{title_suffix}',
+                 loc='left', fontweight='bold')
+    leg = ax.legend(loc='upper right', fontsize=9,
+                    title=f'n = {n} batches  ·  CV = {cv:.2f}\n'
+                          f'median/sample = {med / batch_size:.1f} ms')
+    leg.get_title().set_fontsize(9)
     fig.tight_layout()
-    path = f'{out_prefix}_throughput.png'
-    fig.savefig(path)
+    fig.savefig(out_path)
     plt.close(fig)
-    print(f'wrote {path}')
+    print(f'wrote {out_path}  (n={n}, median={med:.0f} ms, CV={cv:.2f})')
 
 
 def main():
     p = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=__doc__.split('\n\n')[0])
-    p.add_argument('--data-root',
-                   default='/sdf/data/neutrino/omara/wand_sk_like/config_000013',
-                   help='LUCiD v3 dataset root (default: WAND GENIE numu)')
+    p.add_argument('--dataset', choices=pc.DATASETS, default='lucid',
+                   help='Which dataset/loader to benchmark (default: lucid)')
+    p.add_argument('--data-root', default=None,
+                   help='Dataset root. Default: WAND GENIE numu (lucid) or '
+                        'doraemon (jaxtpc).')
+    p.add_argument('--split', default=None,
+                   help='Split subdir under each modality dir. Default: "" '
+                        '(lucid) or the doraemon run (jaxtpc).')
     p.add_argument('--workers', nargs='+', type=int,
                    default=[0, 1, 2, 4, 8, 16],
                    help='num_workers values to sweep')
@@ -287,7 +398,37 @@ def main():
     p.add_argument('--n-warmup', type=int, default=5,
                    help='batches discarded before timing each cell')
     p.add_argument('--n-timed', type=int, default=50,
-                   help='batches timed per cell')
+                   help='batches timed per cell (ignored if --target-events set)')
+    p.add_argument('--target-events', type=int, default=None,
+                   help='sample this many EVENTS per cell instead of a fixed '
+                        'batch count (n_timed = ceil(target / batch_size)), '
+                        'so every batch size gets equal statistical power')
+    p.add_argument('--max-seconds-per-cell', type=float, default=None,
+                   help='also stop a cell after this many wall seconds '
+                        '(bounds total runtime; slow cells get fewer events)')
+    # Histogram mode: per-batch timing distribution for one worker count.
+    p.add_argument('--hist-workers', type=int, default=None,
+                   help='if set, after the grid, emit a per-batch latency '
+                        'histogram (one figure per --hist-batches) at this '
+                        'worker count')
+    p.add_argument('--hist-only', action='store_true',
+                   help='skip the grid (and its CSV / line plots) and only '
+                        'produce the histograms; requires --hist-workers')
+    p.add_argument('--hist-logx', action='store_true',
+                   help='log x-axis + log-spaced bins for the histograms '
+                        '(best view for the heavy-tailed latency)')
+    p.add_argument('--hist-replot', action='store_true',
+                   help='re-draw histograms from previously saved '
+                        '{prefix}_hist_w{W}_b{B}.csv files (no data '
+                        'collection); needs --hist-workers, --hist-batches, '
+                        '--plot')
+    p.add_argument('--hist-batches', nargs='+', type=int, default=[32, 64],
+                   help='batch sizes to histogram (default: 32 64)')
+    p.add_argument('--hist-max-batches', type=int, default=600,
+                   help='max batches to collect per histogram (capped at one '
+                        'epoch; default 600)')
+    p.add_argument('--hist-bins', type=int, default=40,
+                   help='histogram bin count (default 40)')
     p.add_argument('--no-fs-warmup', action='store_true',
                    help='skip the one-time filesystem-warmup pass')
     p.add_argument('--prefetch-sweep', action='store_true',
@@ -301,37 +442,111 @@ def main():
                         '(workers, batch) = (4, 16)')
     p.add_argument('--csv', default=None, help='write timings as CSV')
     p.add_argument('--plot', default=None,
-                   help='write heatmap PNG of samples/s')
+                   help='path prefix for the latency / throughput PNGs')
+    p.add_argument('--replot', default=None,
+                   help='regenerate plots from an existing CSV and exit '
+                        '(no dataset build, no timing); needs --plot')
+    p.add_argument('--only-workers', nargs='+', type=int, default=None,
+                   help='replot: draw only these num_workers lines '
+                        '(default: all present in the CSV)')
+    p.add_argument('--latency-ymax', type=float, default=None,
+                   help='cap the per-sample latency y-axis [ms] (default: '
+                        'auto = 1.15x the max median line, so wide IQR bands '
+                        'clip instead of stretching the axis)')
     args = p.parse_args()
 
+    if args.data_root is None:
+        args.data_root = pc.default_root(args.dataset)
+    if args.split is None:
+        args.split = pc.default_split(args.dataset)
+    if args.hist_only and args.hist_workers is None:
+        p.error('--hist-only requires --hist-workers')
+
+    # Histogram replot fast path: redraw from saved raw-times CSVs, no timing.
+    if args.hist_replot:
+        if args.hist_workers is None or not args.plot:
+            p.error('--hist-replot requires --hist-workers and --plot')
+        prefix = args.plot[:-4] if args.plot.endswith('.png') else args.plot
+        for b in args.hist_batches:
+            src = f'{prefix}_hist_w{args.hist_workers}_b{b}.csv'
+            times = np.loadtxt(src, delimiter=',', skiprows=1)
+            _plot_hist(times, args.hist_workers, b, _title_suffix(args),
+                       f'{prefix}_hist_w{args.hist_workers}_b{b}.png',
+                       bins=args.hist_bins, logx=args.hist_logx)
+        return
+
+    # Replot-only fast path: load a prior CSV and redraw, skip all timing.
+    if args.replot:
+        if not args.plot:
+            p.error('--replot requires --plot (output prefix)')
+        rows = _load_csv(args.replot)
+        # The CSV is grid rows first, then prefetch/persistent sweep extras.
+        # The sweeps always run at the max worker count (and a batch size
+        # that may not be in the grid), so the clean main grid = batch sizes
+        # seen at the minimum worker count. Filter to those, then keep the
+        # first row per (workers, batch).
+        min_w = min(r['num_workers'] for r in rows)
+        grid_batches = {r['batch_size'] for r in rows if r['num_workers'] == min_w}
+        seen, grid_rows = set(), []
+        for r in rows:
+            key = (r['num_workers'], r['batch_size'])
+            if r['batch_size'] in grid_batches and key not in seen:
+                seen.add(key)
+                grid_rows.append(r)
+        if args.only_workers is not None:
+            keep = set(args.only_workers)
+            grid_rows = [r for r in grid_rows if r['num_workers'] in keep]
+        prefix = args.plot[:-4] if args.plot.endswith('.png') else args.plot
+        _plot_lines(grid_rows, prefix, _title_suffix(args),
+                    latency_ymax=args.latency_ymax)
+        return
+
+    # Per-cell timing budget shared by the grid and the sweeps. target_events
+    # (if set) overrides the fixed n_timed; max_seconds bounds slow cells.
+    budget = dict(
+        n_timed=None if args.target_events else args.n_timed,
+        target_events=args.target_events,
+        max_seconds=args.max_seconds_per_cell,
+    )
+
+    print(f'dataset   = {args.dataset}')
     print(f'data_root = {args.data_root}')
+    print(f'split     = {args.split!r}')
     print(f'workers   = {args.workers}')
     print(f'batches   = {args.batches}')
-    print(f'warmup={args.n_warmup} timed={args.n_timed}')
+    if args.target_events:
+        print(f'target_events={args.target_events}  '
+              f'max_s/cell={args.max_seconds_per_cell}  warmup={args.n_warmup}')
+    else:
+        print(f'warmup={args.n_warmup} timed={args.n_timed}')
     print()
 
-    ds = _build_dataset(args.data_root)
+    ds = _build_dataset(args.dataset, args.data_root, args.split)
     print(f'len(ds) = {len(ds)}\n')
 
     if not args.no_fs_warmup:
         _warmup_filesystem(ds, n_events=200)
         print()
 
-    print('=== main grid: num_workers × batch_size ===')
     grid_rows = []
-    for w in args.workers:
+    if not args.hist_only:
+        print('=== main grid: num_workers × batch_size ===')
+    for w in ([] if args.hist_only else args.workers):
         for b in args.batches:
             print(f'  cell: workers={w} batch={b} ...', flush=True)
             row = _time_cell(
                 ds, batch_size=b, num_workers=w,
                 prefetch_factor=args.prefetch_factor,
                 persistent_workers=(w > 0),
-                n_warmup=args.n_warmup, n_timed=args.n_timed)
+                n_warmup=args.n_warmup, **budget)
+            print(f'    -> {row["n_timed"]} batches, {row["events_timed"]} ev, '
+                  f'{row["samples_per_s"]:.1f} samples/s', flush=True)
             grid_rows.append(row)
-    print()
-    _print_table(grid_rows,
-                 fixed=[('prefetch_factor', args.prefetch_factor),
-                        ('persistent_workers', 'True (when workers>0)')])
+    if grid_rows:
+        print()
+        _print_table(grid_rows,
+                     fixed=[('prefetch_factor', args.prefetch_factor),
+                            ('persistent_workers', 'True (when workers>0)')])
 
     extra_rows = []
     if args.prefetch_sweep:
@@ -345,7 +560,7 @@ def main():
                 row = _time_cell(
                     ds, batch_size=16, num_workers=w_top, prefetch_factor=pf,
                     persistent_workers=True,
-                    n_warmup=args.n_warmup, n_timed=args.n_timed)
+                    n_warmup=args.n_warmup, **budget)
                 extra_rows.append(row)
             print()
             _print_table(extra_rows,
@@ -360,25 +575,48 @@ def main():
                 ds, batch_size=16, num_workers=4,
                 prefetch_factor=args.prefetch_factor,
                 persistent_workers=pw,
-                n_warmup=args.n_warmup, n_timed=args.n_timed)
+                n_warmup=args.n_warmup, **budget)
             persistent_rows.append(row)
         _print_table(persistent_rows,
                      fixed=[('cell', 'workers=4, batch=16')])
         extra_rows.extend(persistent_rows)
 
     all_rows = grid_rows + extra_rows
-    if args.csv:
+    if args.csv and not args.hist_only:
         _save_csv(all_rows, args.csv)
-    if args.plot:
+    if args.plot and not args.hist_only:
         # args.plot is treated as a path prefix; two PNGs are written:
         #   {prefix}_latency.png and {prefix}_throughput.png
         prefix = args.plot
         if prefix.endswith('.png'):
             prefix = prefix[:-4]
-        title_suffix = (
-            f'·  {os.path.basename(args.data_root)}'
-            f'  ·  prefetch_factor={args.prefetch_factor}')
-        _plot_lines(grid_rows, prefix, title_suffix)
+        _plot_lines(grid_rows, prefix, _title_suffix(args),
+                    latency_ymax=args.latency_ymax)
+
+    # --- Histogram mode: per-batch timing distribution at one worker count ---
+    if args.hist_workers is not None:
+        prefix = (args.plot[:-4] if args.plot and args.plot.endswith('.png')
+                  else (args.plot or f'hist_{args.dataset}'))
+        print(f'\n=== histograms: workers={args.hist_workers}, '
+              f'batches={args.hist_batches} (<= {args.hist_max_batches} '
+              f'batches/epoch each) ===')
+        for b in args.hist_batches:
+            print(f'  collecting: workers={args.hist_workers} batch={b} ...',
+                  flush=True)
+            # No max_seconds here — let it run to hist_max_batches (or epoch)
+            # so the histogram has plenty of samples.
+            _, times = _time_cell(
+                ds, batch_size=b, num_workers=args.hist_workers,
+                prefetch_factor=args.prefetch_factor,
+                persistent_workers=(args.hist_workers > 0),
+                n_warmup=args.n_warmup, n_timed=args.hist_max_batches,
+                return_times=True)
+            out_png = f'{prefix}_hist_w{args.hist_workers}_b{b}.png'
+            out_csv = f'{prefix}_hist_w{args.hist_workers}_b{b}.csv'
+            np.savetxt(out_csv, times, delimiter=',',
+                       header='per_batch_ms', comments='')
+            _plot_hist(times, args.hist_workers, b, _title_suffix(args),
+                       out_png, bins=args.hist_bins, logx=args.hist_logx)
 
 
 if __name__ == '__main__':

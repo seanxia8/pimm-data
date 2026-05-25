@@ -27,21 +27,8 @@ import sys
 import time
 
 import numpy as np
-import h5py
 
-from pimm_data import LUCiDDataset
-from pimm_data.readers.lucid_edep import LUCiDEdepReader
-from pimm_data.readers.lucid_hits import LUCiDHitsReader
-from pimm_data.readers.lucid_sensor import LUCiDSensorReader
-from pimm_data.readers.lucid_labl import LUCiDLablReader
-
-
-# Match what benchmark_loader.py uses so timings are comparable.
-DEFAULT_TRANSFORM = [
-    dict(type='Collect', stream='hits',
-         keys=['coord', 'energy', 'time'],
-         feat_keys=['energy', 'time']),
-]
+import _profile_common as pc
 
 
 def _stat(name, times_ms, n_events, baseline_ms=None):
@@ -72,84 +59,16 @@ def _time_callable(fn, n, warmup):
     return times
 
 
-def _raw_h5py_reader(data_root):
-    """Closure that reads the same per-event arrays as the four readers
-    but without going through pimm-data reader classes. Establishes the
-    pure I/O ceiling.
-    """
-    edep_files   = sorted(glob.glob(f'{data_root}/edep/wc_edep_*.h5'))
-    sensor_files = sorted(glob.glob(f'{data_root}/sensor/wc_sensor_*.h5'))
-    hits_files   = sorted(glob.glob(f'{data_root}/hits/wc_hits_*.h5'))
-    labl_files   = sorted(glob.glob(f'{data_root}/labl/wc_labl_*.h5'))
-    # Build the per-file event-count index up front (matches readers).
-    counts = []
-    for p in edep_files:
-        with h5py.File(p, 'r') as f:
-            counts.append(int(f['config'].attrs['n_events']))
-    cumlens = np.cumsum(counts)
-    # Open all files once and keep handles.
-    fhs = {
-        'edep':   [h5py.File(p, 'r', libver='latest', swmr=True) for p in edep_files],
-        'sensor': [h5py.File(p, 'r', libver='latest', swmr=True) for p in sensor_files],
-        'hits':   [h5py.File(p, 'r', libver='latest', swmr=True) for p in hits_files],
-        'labl':   [h5py.File(p, 'r', libver='latest', swmr=True) for p in labl_files],
-    }
-
-    def locate(idx):
-        i = int(np.searchsorted(cumlens, idx, side='right'))
-        local = idx - (int(cumlens[i - 1]) if i > 0 else 0)
-        return i, f'event_{local:03d}'
-
-    def read(idx):
-        fi, ek = locate(idx)
-        # Mirror the per-modality reads the four readers do.
-        e = fhs['edep'][fi][ek]
-        _ = e['start_x'][:]; _ = e['start_y'][:]; _ = e['start_z'][:]
-        _ = e['end_x'][:];   _ = e['end_y'][:];   _ = e['end_z'][:]
-        _ = e['edep'][:];    _ = e['time'][:];    _ = e['track_idx'][:]
-        _ = e['dir_x'][:];   _ = e['dir_y'][:];   _ = e['dir_z'][:]
-        _ = e['beta_start'][:]; _ = e['n_cherenkov'][:]
-        if 'contained' in e:
-            _ = e['contained'][:]
-
-        s = fhs['sensor'][fi][ek]
-        _ = s['sensor_idx'][:]; _ = s['PE'][:]; _ = s['T'][:]
-
-        h = fhs['hits'][fi][ek]
-        _ = h['sensor_idx'][:]; _ = h['particle_idx'][:]
-        _ = h['PE'][:]; _ = h['T'][:]
-
-        l = fhs['labl'][fi][ek]
-        if 'per_event' in l:
-            _ = l['per_event']['t0'][()]; _ = l['per_event']['contained'][()]
-        if 'per_particle' in l:
-            pp = l['per_particle']
-            for k in ('category', 'contained',
-                      'genealogy_data', 'genealogy_offsets',
-                      'ext_genealogy_data', 'ext_genealogy_offsets'):
-                if k in pp:
-                    _ = pp[k][:]
-        if 'per_track' in l:
-            pt = l['per_track']
-            for k in ('track_id', 'pdg', 'parent_id', 'particle_idx',
-                      'ancestor', 'interaction', 'initial_energy',
-                      'n_cherenkov'):
-                if k in pt:
-                    _ = pt[k][:]
-
-    def close():
-        for handles in fhs.values():
-            for f in handles:
-                f.close()
-
-    return read, close, sum(counts)
-
-
 def main():
     p = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
                                 description=__doc__.split('\n\n')[0])
-    p.add_argument('--data-root',
-                   default='/sdf/data/neutrino/omara/wand_sk_like/config_000013')
+    p.add_argument('--dataset', choices=pc.DATASETS, default='lucid',
+                   help='Which dataset/loader to profile (default: lucid)')
+    p.add_argument('--data-root', default=None,
+                   help='Dataset root (default: per-dataset standard root)')
+    p.add_argument('--split', default=None,
+                   help='Split subdir under each modality dir '
+                        '(default: "" for lucid, the doraemon run for jaxtpc)')
     p.add_argument('--n-events', type=int, default=500,
                    help='number of timed events per stage')
     p.add_argument('--warmup', type=int, default=50,
@@ -159,7 +78,14 @@ def main():
                         '(runs over an extra n_events events)')
     args = p.parse_args()
 
+    if args.data_root is None:
+        args.data_root = pc.default_root(args.dataset)
+    if args.split is None:
+        args.split = pc.default_split(args.dataset)
+
+    print(f'dataset   = {args.dataset}')
     print(f'data_root = {args.data_root}')
+    print(f'split     = {args.split!r}')
     print(f'n_events  = {args.n_events}   warmup = {args.warmup}')
     print()
 
@@ -167,45 +93,29 @@ def main():
     # 1) Build everything once
     # ---------------------------------------------------------------
     print('--- building objects ---')
-    t0 = time.perf_counter()
-    edep_r = LUCiDEdepReader(data_root=f'{args.data_root}/edep',
-                             dataset_name='wc')
-    edep_r.h5py_worker_init()
-    print(f'  edep reader      built+opened in {1000*(time.perf_counter()-t0):.1f} ms')
+    readers = []
+    for name, reader in pc.build_readers(args.dataset, args.data_root, args.split):
+        t0 = time.perf_counter()
+        # build_readers already opened handles; time a no-op touch instead.
+        _ = len(reader)
+        readers.append((name, reader))
+        print(f'  {name:6s} reader     opened, {len(reader):,} events  '
+              f'({1000*(time.perf_counter()-t0):.1f} ms)')
+
+    cls = 'JAXTPCDataset' if args.dataset == 'jaxtpc' else 'LUCiDDataset'
 
     t0 = time.perf_counter()
-    sensor_r = LUCiDSensorReader(data_root=f'{args.data_root}/sensor',
-                                 dataset_name='wc')
-    sensor_r.h5py_worker_init()
-    print(f'  sensor reader    built+opened in {1000*(time.perf_counter()-t0):.1f} ms')
+    ds_raw = pc.build_dataset(args.dataset, args.data_root, split=args.split,
+                              transform=None)
+    print(f'  {cls} (no transform) built in {1000*(time.perf_counter()-t0):.1f} ms')
 
     t0 = time.perf_counter()
-    hits_r = LUCiDHitsReader(data_root=f'{args.data_root}/hits',
-                             dataset_name='wc')
-    hits_r.h5py_worker_init()
-    print(f'  hits reader      built+opened in {1000*(time.perf_counter()-t0):.1f} ms')
+    ds = pc.build_dataset(args.dataset, args.data_root, split=args.split)
+    print(f'  {cls} (+ Collect) built in {1000*(time.perf_counter()-t0):.1f} ms')
 
     t0 = time.perf_counter()
-    labl_r = LUCiDLablReader(data_root=f'{args.data_root}/labl',
-                             dataset_name='wc')
-    labl_r.h5py_worker_init()
-    print(f'  labl reader      built+opened in {1000*(time.perf_counter()-t0):.1f} ms')
-
-    t0 = time.perf_counter()
-    ds_raw = LUCiDDataset(data_root=args.data_root, split='',
-                          dataset_name='wc',
-                          modalities=('edep', 'sensor', 'hits', 'labl'))
-    print(f'  LUCiDDataset (no transform) built in {1000*(time.perf_counter()-t0):.1f} ms')
-
-    t0 = time.perf_counter()
-    ds = LUCiDDataset(data_root=args.data_root, split='',
-                      dataset_name='wc',
-                      modalities=('edep', 'sensor', 'hits', 'labl'),
-                      transform=DEFAULT_TRANSFORM)
-    print(f'  LUCiDDataset (+ Collect) built in {1000*(time.perf_counter()-t0):.1f} ms')
-
-    t0 = time.perf_counter()
-    raw_read, raw_close, n_total = _raw_h5py_reader(args.data_root)
+    raw_read, raw_close, n_total = pc.raw_reader(
+        args.dataset, args.data_root, split=args.split)
     print(f'  raw h5py reader  built in {1000*(time.perf_counter()-t0):.1f} ms  '
           f'(spans {n_total:,} events across all shards)')
 
@@ -224,12 +134,9 @@ def main():
     raw_times = _time_callable(raw_read,         max_events, args.warmup)
     raw_mean = float(np.mean(raw_times))
 
-    edep_times   = _time_callable(edep_r.read_event,   max_events, args.warmup)
-    sensor_times = _time_callable(sensor_r.read_event, max_events, args.warmup)
-    hits_times   = _time_callable(hits_r.read_event,   max_events, args.warmup)
-    labl_times   = _time_callable(labl_r.read_event,   max_events, args.warmup)
-    sum_readers  = (np.array(edep_times) + np.array(sensor_times)
-                    + np.array(hits_times) + np.array(labl_times))
+    reader_times = {name: _time_callable(r.read_event, max_events, args.warmup)
+                    for name, r in readers}
+    sum_readers = np.sum([np.array(t) for t in reader_times.values()], axis=0)
 
     getdata_times    = _time_callable(ds_raw.get_data, max_events, args.warmup)
     getitem_times    = _time_callable(ds.__getitem__,  max_events, args.warmup)
@@ -237,14 +144,14 @@ def main():
     print()
     _stat('raw h5py (I/O ceiling)',          raw_times,     max_events)
     print()
-    _stat('LUCiDEdepReader.read_event',      edep_times,    max_events, raw_mean)
-    _stat('LUCiDSensorReader.read_event',    sensor_times,  max_events, raw_mean)
-    _stat('LUCiDHitsReader.read_event',      hits_times,    max_events, raw_mean)
-    _stat('LUCiDLablReader.read_event',      labl_times,    max_events, raw_mean)
-    _stat('  Σ four readers (independent)',  sum_readers,   max_events, raw_mean)
+    for name, t in reader_times.items():
+        _stat(f'{cls[:-7]}{name.capitalize()}Reader.read_event',
+              t, max_events, raw_mean)
+    _stat(f'  Σ {len(readers)} readers (independent)',
+          sum_readers, max_events, raw_mean)
     print()
-    _stat('LUCiDDataset.get_data (assemble)', getdata_times, max_events, raw_mean)
-    _stat('LUCiDDataset.__getitem__ (+ Collect)',
+    _stat(f'{cls}.get_data (assemble)', getdata_times, max_events, raw_mean)
+    _stat(f'{cls}.__getitem__ (+ Collect)',
                                              getitem_times, max_events, raw_mean)
 
     # ---------------------------------------------------------------

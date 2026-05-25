@@ -486,12 +486,18 @@ See `scripts/` for the diagnostic tools that produced these numbers.
 
 ### Profiling and benchmarking
 
-Three scripts under `scripts/` cover loader performance from
-complementary angles:
+Scripts under `scripts/` cover loader performance from complementary
+angles. All three profilers take `--dataset {lucid,jaxtpc}` (default
+`lucid`) plus `--data-root`/`--split`, so they run against either the
+LUCiD (`wc_*`) or JAXTPC (`sim_*`) v3 datasets via one code path
+(shared specs in `scripts/_profile_common.py`).
 
 * **`benchmark_loader.py`** — sweep `(num_workers, batch_size, prefetch)`
-  on real data and emit latency / throughput plots with IQR error bars.
-  Defaults reproduce the table above.
+  on real data and emit latency / throughput plots (shaded IQR bands).
+  Per-batch histograms via `--hist-workers/--hist-batches` (`--hist-logx`
+  for the heavy tail). `--target-events`/`--max-seconds-per-cell` give
+  equal statistical power per cell; `--replot`/`--hist-replot` redraw from
+  saved CSVs.
 * **`profile_loader.py`** — per-stage breakdown of `__getitem__`
   (raw h5py I/O vs reader wrappers vs dataset assembly vs `Collect`),
   plus a cProfile hotspot dump.
@@ -499,6 +505,16 @@ complementary angles:
   filesystem bandwidth or PyTorch DataLoader IPC by comparing raw
   `multiprocessing.Pool`, `ThreadPoolExecutor`, and same-shard
   contention scaling.
+* **`transcode_codec.py`** — re-encode production HDF5 between codecs
+  (gzip → blosc/zstd/lz4) to compare file size and read speed.
+
+**Codec finding:** JAXTPC loading is bound by gzip **decompression**
+(CPU/GIL-serial — scales with worker *processes*, not threads), not
+filesystem I/O. Re-encoding the output to `blosc-zstd` (now the JAXTPC
+production default) reads ~2.3× faster *and* yields smaller files than
+gzip; `blosc-lz4hc` reads ~4× faster at gzip's size. Reading any
+blosc/zstd/lz4 file requires `hdf5plugin` (a declared dependency;
+registered automatically on `import pimm_data`).
 
 ### Batch output
 

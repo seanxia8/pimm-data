@@ -36,8 +36,11 @@ def codec_kwargs(name):
     if name == 'blosc-lz4':
         return dict(**hdf5plugin.Blosc(cname='lz4', clevel=5,
                                        shuffle=hdf5plugin.Blosc.SHUFFLE))
-    if name == 'blosc-zstd':
-        return dict(**hdf5plugin.Blosc(cname='zstd', clevel=3,
+    if name == 'blosc-lz4hc':  # gzip's ratio at ~4x faster reads
+        return dict(**hdf5plugin.Blosc(cname='lz4hc', clevel=5,
+                                       shuffle=hdf5plugin.Blosc.SHUFFLE))
+    if name == 'blosc-zstd':   # clevel 4 to match production/save.py default
+        return dict(**hdf5plugin.Blosc(cname='zstd', clevel=4,
                                        shuffle=hdf5plugin.Blosc.SHUFFLE))
     if name == 'none':       return dict()
     raise ValueError(f'unknown codec {name}')

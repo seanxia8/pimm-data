@@ -125,3 +125,31 @@ def test_readers_fall_back_without_readout_type_attr(tmp_path):
         split='', dataset_name='sim')
     assert sr.readout_type == 'pixel'
     assert ir.readout_type == 'pixel'
+
+
+def test_pixel_decode_negative_peak_sign(tmp_path):
+    """_decode_plane_pixel must use |peak| — charge sign lives in charges_i16.
+
+    Regression guard: a group whose peak entry is negative previously had
+    every decoded charge sign-flipped (reader multiplied by the *signed*
+    peak while the writer normalizes by abs(peak)).
+    """
+    path = str(tmp_path / 'plane.h5')
+    with h5py.File(path, 'w') as f:
+        g = f.create_group('plane')
+        g.create_dataset('group_ids', data=np.array([0], np.int32))
+        g.create_dataset('group_sizes', data=np.array([3], np.uint8))
+        g.create_dataset('center_py', data=np.array([10], np.int16))
+        g.create_dataset('center_pz', data=np.array([20], np.int16))
+        g.create_dataset('center_times', data=np.array([100], np.int16))
+        g.create_dataset('peak_charges', data=np.array([-100.0], np.float32))  # NEGATIVE peak
+        g.create_dataset('delta_py', data=np.zeros(3, np.int8))
+        g.create_dataset('delta_pz', data=np.zeros(3, np.int8))
+        g.create_dataset('delta_times', data=np.zeros(3, np.int8))
+        g.create_dataset('charges_i16', data=np.array([16383, -32767, 8191], np.int16))
+    with h5py.File(path, 'r') as f:
+        _, _, _, _, charges = JAXTPCHitsReader._decode_plane_pixel(f['plane'])
+    expected = 100.0 * np.array([16383, -32767, 8191], np.float32) / 32767.0
+    assert np.allclose(charges, expected, atol=1e-3), (charges, expected)
+    # sign must follow charges_i16, not the (negative) peak
+    assert charges[0] > 0 and charges[1] < 0 and charges[2] > 0

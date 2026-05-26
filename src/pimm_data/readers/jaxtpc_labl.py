@@ -6,11 +6,15 @@ interaction) per volume. This is used for:
   - 3D tasks: deposit's track_id → look up label directly
   - 2D tasks: pixel → group_id → group_to_track → track_id → look up label
 
-Output: a dict of numpy arrays per volume, keyed by label name.
-    labl_v0_track_ids:   (T,) int32  — unique track IDs
-    labl_v0_particle:    (T,) int32  — particle type per track
-    labl_v0_cluster:     (T,) int32  — cluster ID per track
-    labl_v0_interaction: (T,) int32  — interaction ID per track
+Output: a dict of numpy arrays per volume, keyed ``labl_v{N}_{col}`` where
+``col`` is each dataset present in the labl file, e.g.:
+    labl_v0_track_ids:        (T,) int32  — unique track IDs (primary key)
+    labl_v0_track_pdg:        (T,) int32  — PDG code per track
+    labl_v0_track_cluster:    (T,) int32  — cluster ID per track
+    labl_v0_track_interaction:(T,) int32  — interaction ID per track
+    labl_v0_track_ancestor:   (T,) int32  — ancestor track per track
+    labl_v0_deposit_to_track: (N_v,) int32 — per-deposit FK into track_ids
+(Exact columns depend on the labl writer / the reader's ``label_keys``.)
 """
 
 import os

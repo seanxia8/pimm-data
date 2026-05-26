@@ -196,7 +196,9 @@ def _build_jaxtpc_plane(rng, n_groups, n_pixels_per_plane, readout_type='wire'):
     )
 
     if readout_type == 'pixel':
-        out['charges_i16'] = rng.integers(1, 32767, size=total, dtype=np.int16)
+        # Signed, matching the production writer (pixel charges are bipolar;
+        # sign is carried in charges_i16, magnitude normalized by |peak|).
+        out['charges_i16'] = rng.integers(-32767, 32768, size=total, dtype=np.int16)
         out['center_py'] = rng.integers(10, 200, size=n_groups).astype(np.int16)
         out['center_pz'] = rng.integers(10, 200, size=n_groups).astype(np.int16)
         out['delta_py'] = rng.integers(-2, 3, size=total).astype(np.int8)

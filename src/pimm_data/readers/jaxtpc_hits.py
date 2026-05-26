@@ -208,7 +208,10 @@ class JAXTPCHitsReader:
         times = np.repeat(center_times, group_sizes).astype(np.int32)
         times += delta_times
         gids = np.repeat(group_ids, group_sizes)
-        charges = np.repeat(peak_charges, group_sizes)  # float32
+        # charges_i16 already carries each entry's sign (the writer normalizes
+        # by abs(peak), so charge = |peak| * i16/32767). Multiplying by the
+        # *signed* peak would flip every charge in a negative-peak group.
+        charges = np.abs(np.repeat(peak_charges, group_sizes))  # float32
         charges *= charges_i16
         charges *= np.float32(1.0 / 32767.0)
 

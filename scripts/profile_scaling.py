@@ -20,11 +20,15 @@ If threads scale well but processes don't              → IPC dominates.
 """
 import argparse
 import multiprocessing as mp
+import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+# Allow `python scripts/profile_scaling.py` from any CWD (sibling import).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _profile_common as pc
 
 # The per-event read worker is shared (and picklable for mp.Pool) in

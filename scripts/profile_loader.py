@@ -28,6 +28,8 @@ import time
 
 import numpy as np
 
+# Allow `python scripts/profile_loader.py` from any CWD (sibling import).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _profile_common as pc
 
 

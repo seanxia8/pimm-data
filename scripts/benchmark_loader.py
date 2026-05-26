@@ -44,6 +44,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+# Allow `python scripts/benchmark_loader.py` from any CWD (sibling import).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _profile_common as pc
 
 

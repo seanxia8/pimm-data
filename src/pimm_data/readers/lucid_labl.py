@@ -40,6 +40,8 @@ Output dict (flat; dataset layer rebuilds nested ``{event, particle, track}``):
 
     labl_particle_category                (P,)     int32
     labl_particle_contained               (P,)     bool
+    labl_particle_interaction_idx         (P,)     int32   (one-hop FK →
+                                                  instance_interaction axis)
     labl_particle_genealogy_data          (G,) int32
     labl_particle_genealogy_offsets       (P+1,) int32
     labl_particle_ext_genealogy_data      (Ge,) int32
@@ -67,7 +69,7 @@ log = logging.getLogger(__name__)
 
 
 _PARTICLE_KEYS = (
-    'category', 'contained',
+    'category', 'contained', 'interaction_idx',
     'genealogy_data', 'genealogy_offsets',
     'ext_genealogy_data', 'ext_genealogy_offsets',
 )
@@ -77,7 +79,8 @@ _TRACK_KEYS = (
 )
 _EVENT_KEYS = ('t0', 'contained')
 
-_INT_KEYS = {'category', 'genealogy_data', 'genealogy_offsets',
+_INT_KEYS = {'category', 'interaction_idx',
+             'genealogy_data', 'genealogy_offsets',
              'ext_genealogy_data', 'ext_genealogy_offsets',
              'track_id', 'pdg', 'parent_id', 'particle_idx',
              'ancestor', 'interaction', 'n_cherenkov'}

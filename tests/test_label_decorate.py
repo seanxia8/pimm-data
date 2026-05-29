@@ -83,6 +83,25 @@ def test_lucid_label_config_default_off_unchanged(tmp_path):
     assert "segment_pid" not in hits        # named keys only when opted in
 
 
+def test_lucid_instance_interaction_one_hop(tmp_path):
+    """instance_interaction = per_particle.interaction_idx[particle_idx],
+    a one-hop point gather via the generic decorator (no new code)."""
+    root = make_lucid_sample(str(tmp_path), n_events=2)
+    cfg = [dict(out="instance_interaction", scope="point", fk="particle_idx",
+                source=("particle", "interaction_idx"))]
+    ds = LUCiDDataset(data_root=root, split="", modalities=("hits", "labl"),
+                      label_config=cfg)
+    hits = ds.get_data(0)["hits"]
+    assert "instance_interaction" in hits
+
+    with h5py.File(os.path.join(root, "labl", "wc_labl_0000.h5"), "r") as f:
+        inter = f["event_000/per_particle/interaction_idx"][()]
+    with h5py.File(os.path.join(root, "hits", "wc_hits_0000.h5"), "r") as f:
+        particle_idx = f["event_000/particle_idx"][()]
+    expected = gather_with_fill(particle_idx, inter)
+    assert hits["instance_interaction"][:, 0].tolist() == expected.tolist()
+
+
 def test_lucid_label_config_edep(tmp_path):
     root = make_lucid_sample(str(tmp_path), n_events=2)
     ds = LUCiDDataset(data_root=root, split="", modalities=("edep", "labl"),

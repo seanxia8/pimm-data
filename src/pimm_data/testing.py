@@ -429,6 +429,10 @@ def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
     # Per-particle
     category = rng.integers(0, 5, size=n_particles).astype(np.int32)
     contained = (rng.random(n_particles) > 0.3).astype(bool)
+    # interaction (vertex) each particle belongs to — FK enabling the
+    # one-hop instance_interaction axis (particle_idx → interaction_idx).
+    particle_interaction_idx = rng.integers(
+        0, 2, size=n_particles).astype(np.int32)
     # Trivial genealogy: each particle's entry is just its own index.
     genealogy_offsets = np.arange(n_particles + 1, dtype=np.int32)
     genealogy_data = np.arange(n_particles, dtype=np.int32)
@@ -490,6 +494,7 @@ def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
             t0=np.float32(rng.uniform(-1.0, 1.0)),
             event_contained=bool(rng.random() > 0.3),
             category=category, contained=contained,
+            particle_interaction_idx=particle_interaction_idx,
             genealogy_data=genealogy_data,
             genealogy_offsets=genealogy_offsets,
             ext_genealogy_data=ext_genealogy_data,
@@ -578,6 +583,8 @@ def _write_lucid_labl(path, events):
             pp = g.create_group('per_particle')
             pp.create_dataset('category', data=l['category'])
             pp.create_dataset('contained', data=l['contained'])
+            pp.create_dataset('interaction_idx',
+                              data=l['particle_interaction_idx'])
             pp.create_dataset('genealogy_data', data=l['genealogy_data'])
             pp.create_dataset('genealogy_offsets', data=l['genealogy_offsets'])
             pp.create_dataset('ext_genealogy_data', data=l['ext_genealogy_data'])

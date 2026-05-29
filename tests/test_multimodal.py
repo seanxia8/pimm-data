@@ -96,23 +96,40 @@ def test_holdout_deterministic(tmp_path):
     assert a.data_list == b.data_list
 
 
-def test_holdout_invariant_to_sharding(tmp_path):
-    """Same source_event_idx set, different shard layout → same split.
+def test_holdout_invariant_to_shard_add_remove(tmp_path):
+    """Removing a shard does NOT change the split of the surviving events.
 
-    Root A: 10 events in 1 file (sei 0..9). Root B: 10 events in 2 files of 5
-    (sei 0..4, 5..9 → 0..9). Same config_id + seed ⇒ identical train split by
-    source_event_idx. A positional permutation would NOT have this property.
+    Identity = (config_id, file_index, source_event_idx); file_index and
+    source_event_idx are intrinsic (stamped in config), so events in the kept
+    shards hash identically whether or not other shards are present. (A
+    positional permutation, or a (config_id, sei) key on shard-local sei,
+    would NOT have this property — the real-data failure mode this fixes.)
     """
-    a = make_jaxtpc_sample(str(tmp_path / 'a'), n_events=10, n_files=1)
-    b = make_jaxtpc_sample(str(tmp_path / 'b'), n_events=5, n_files=2)
+    # 3-shard fixture vs the same first-2 shards (same seed → byte-identical
+    # files 0,1; the global source_event_idx + file_index are stamped intrinsic).
+    a = make_jaxtpc_sample(str(tmp_path / 'a'), n_events=6, n_files=3)
+    b = make_jaxtpc_sample(str(tmp_path / 'b'), n_events=6, n_files=2)
     ho = dict(seed=1, fractions=(0.6, 0.2, 0.2))
     da = MultiModalEventDataset(
         _SRC, [dict(root=a, label=0, config_id=0)], split='train', holdout=ho)
     db = MultiModalEventDataset(
         _SRC, [dict(root=b, label=0, config_id=0)], split='train', holdout=ho)
-    # compare by source_event_idx (the stable id), ignoring root/local idx.
-    assert {sei for _, sei in _identity_set(da)} == \
-           {sei for _, sei in _identity_set(db)}
+    a_train = _identity_set(da)
+    b_train = _identity_set(db)
+    # b is a's first two shards → b's train set == a's train events in files 0,1.
+    assert b_train == {idn for idn in a_train if idn[1] in (0, 1)}
+    assert len(b_train) > 0
+
+
+def test_event_identity_unique_no_collisions(tmp_path):
+    """Identity is UNIQUE across a multi-shard source (the F1 bug: shard-local
+    source_event_idx collided across shards)."""
+    root = make_jaxtpc_sample(str(tmp_path), n_events=8, n_files=3)
+    ds = MultiModalEventDataset(_SRC, [dict(root=root, label=0, config_id=0)],
+                                split='all')
+    ids = [ds.event_identity(i) for i in range(len(ds))]
+    assert len(ids) == 24
+    assert len(set(ids)) == len(ids)        # no collisions across 3 shards
 
 
 def test_n_per_config_holdout(tmp_path):
@@ -138,14 +155,14 @@ def test_min_deposits_filter_through_composition(tmp_path):
                dataset_name='sim', min_deposits=1)
     ds = MultiModalEventDataset(src, [dict(root=root, label=0, config_id=0)])
     assert len(ds) == 3                       # event_001 filtered out
-    # the dropped event is absent from identity too
-    seis = {sei for _, sei in _identity_set(ds)}
+    # the dropped event is absent from identity too (sei is element 2)
+    seis = {idn[2] for idn in _identity_set(ds)}
     assert 1 not in seis
 
 
 def test_event_identity_shape(tmp_path):
     root = make_jaxtpc_sample(str(tmp_path), n_events=6)
     ds = MultiModalEventDataset(_SRC, [dict(root=root, label=0, config_id=5)])
-    cid, sei = ds.event_identity(0)
+    cid, file_index, sei = ds.event_identity(0)
     assert cid == 5
-    assert isinstance(sei, int)
+    assert isinstance(file_index, int) and isinstance(sei, int)

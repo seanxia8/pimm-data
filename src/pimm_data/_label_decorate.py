@@ -38,7 +38,13 @@ def gather_with_fill(fk, column, keyed_by=None, fill=-1):
     (searchsorted, match-verified) — the JAXTPC ``track_ids`` case.
     """
     fk = np.asarray(fk)
-    out = np.full(fk.shape, fill, dtype=column.dtype)
+    # Output dtype must hold both the column values and the (-1) fill sentinel.
+    # A bool/unsigned column would make `fill=-1` silently True (bool) or
+    # OverflowError (uint) — real labl `category` is uint8, `contained` is bool.
+    dt = column.dtype
+    if not (np.issubdtype(dt, np.floating) or np.issubdtype(dt, np.signedinteger)):
+        dt = np.int64
+    out = np.full(fk.shape, fill, dtype=dt)
     if fk.size == 0 or column.shape[0] == 0:
         return out
     if keyed_by is None:

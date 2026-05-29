@@ -151,3 +151,16 @@ def test_jaxtpc_label_config_default_off(tmp_path):
                        modalities=("edep", "labl"), dataset_name="sim")
     edep = ds.get_data(0)["edep"]
     assert "segment" in edep and "segment_pid" not in edep
+
+
+def test_gather_bool_and_unsigned_columns():
+    """F3: bool/unsigned columns must not crash (uint OverflowError) or
+    silently fill True (bool). Real category is uint8, contained is bool."""
+    # unsigned uint8 (real category) with an out-of-range FK → fill -1, no crash
+    cat = np.array([0, 2, 3], dtype=np.uint8)
+    out = gather_with_fill(np.array([0, 5, 2]), cat, fill=-1)
+    assert out.tolist() == [0, -1, 3]
+    # bool (real contained): unresolved must be the -1 sentinel, not True
+    contained = np.array([True, False, True])
+    out2 = gather_with_fill(np.array([0, 9, 1]), contained, fill=-1)
+    assert out2.tolist() == [1, -1, 0]           # not [True, True, False]

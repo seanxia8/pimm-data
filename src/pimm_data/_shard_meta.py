@@ -50,6 +50,14 @@ def read_shard_meta(path):
         'present_events': present,
         'config_attrs': config_attrs,
         'source_event_idx': sei_vec,
+        # Identity inputs (F1): file_index is the intrinsic shard id (both
+        # detectors); global_event_offset lets a shard-local per-event
+        # source_event_idx be resolved without opening event groups.
+        'global_event_offset': (int(config_attrs['global_event_offset'])
+                                 if 'global_event_offset' in config_attrs
+                                 else None),
+        'file_index': (int(config_attrs['file_index'])
+                       if 'file_index' in config_attrs else None),
     }
     _CACHE[key] = meta
     return meta

@@ -1326,8 +1326,17 @@ class GridSample(object):
                     vals = data_dict[rk]
                     shape = (num_voxels,) + vals.shape[1:]
                     if op == "sum":
-                        agg = np.zeros(shape, dtype=vals.dtype)
-                        np.add.at(agg, voxel_of_point, vals)
+                        # Accumulate WIDE — summing in vals.dtype silently
+                        # saturates/wraps narrow real dtypes (float16 sum
+                        # 374771 -> 4096; int8/uint16 wrap). Keep the wide
+                        # output (int64 / float32) rather than re-narrowing.
+                        if np.issubdtype(vals.dtype, np.integer):
+                            agg = np.zeros(shape, dtype=np.int64)
+                            np.add.at(agg, voxel_of_point, vals)
+                        else:
+                            acc = np.zeros(shape, dtype=np.float64)
+                            np.add.at(acc, voxel_of_point, vals)
+                            agg = acc.astype(np.float32)
                     elif op == "min":
                         fill = (np.inf if np.issubdtype(vals.dtype, np.floating)
                                 else np.iinfo(vals.dtype).max)

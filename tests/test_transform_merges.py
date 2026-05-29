@@ -183,3 +183,20 @@ def test_gridsample_preserves_schema_keys_through_subsample():
               "segment_pid": seg.copy()})
     # 2 voxels survive; segment_pid subsetted to match (not stale length 3).
     assert out["segment_pid"].shape[0] == out["coord"].shape[0] == 2
+
+
+def test_gridsample_sum_no_overflow_narrow_dtypes():
+    """F2: sum must not saturate/wrap narrow dtypes (real de is float16,
+    delta_times int8, sensor values uint16)."""
+    # many points in one voxel, float16 values whose true sum >> float16 max
+    n = 5000
+    coord = np.zeros((n, 3), dtype=np.float32)   # all one voxel
+    val_f16 = np.full((n, 1), 100.0, dtype=np.float16)   # true sum 500000
+    out = GridSample(grid_size=1.0, mode="train",
+                     reducers={"v": "sum"})({"coord": coord.copy(), "v": val_f16})
+    assert out["v"][0, 0] == pytest.approx(500000.0, rel=1e-3)   # not 4096
+    # int8 values: true sum 5000 >> int8 max 127
+    val_i8 = np.ones((n, 1), dtype=np.int8)
+    out2 = GridSample(grid_size=1.0, mode="train",
+                      reducers={"v": "sum"})({"coord": coord.copy(), "v": val_i8})
+    assert int(out2["v"][0, 0]) == n             # 5000, not wrapped

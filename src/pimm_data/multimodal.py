@@ -40,17 +40,20 @@ log = logging.getLogger(__name__)
 _HOLDOUT_ROLES = ('train', 'val', 'test', 'all')
 
 
-def _holdout_uniform(seed, config_id, source_event_idx):
+def _holdout_uniform(seed, identity):
     """Deterministic uniform draw in [0,1) for one event.
 
-    blake2b of ``(seed, config_id, source_event_idx)`` → uint64 → [0,1).
-    Folding ``config_id`` in makes the split config-stratified for free
-    (every config lands the same fraction in each role) and stable under
-    shard reordering. Reproducible across machines/processes (unlike
-    ``hash()`` or ``np.random``).
+    ``identity = (config_id, file_index, source_event_idx)`` (see
+    ``MultiModalEventDataset.event_identity``). blake2b → uint64 → [0,1).
+    Folding ``config_id`` in makes the split config-stratified for free;
+    folding ``file_index`` in makes the identity UNIQUE even when
+    ``source_event_idx`` is shard-local (doraemon). Reproducible across
+    machines/processes (unlike ``hash()`` or ``np.random``) and stable under
+    shard reorder/add-remove (file_index/source_event_idx are intrinsic).
     """
-    payload = struct.pack('<qqq', int(seed), int(config_id),
-                          int(source_event_idx))
+    config_id, file_index, sei = identity
+    payload = struct.pack('<qqqq', int(seed), int(config_id),
+                          int(file_index), int(sei))
     digest = hashlib.blake2b(payload, digest_size=8).digest()
     return struct.unpack('<Q', digest)[0] / float(1 << 64)
 
@@ -198,36 +201,33 @@ class MultiModalEventDataset(Dataset):
         event_num = int(reader.indices[file_idx][local_idx - base])
         return file_idx, event_num
 
-    def _source_event_idx(self, sub, file_idx, event_num):
-        """Stable per-event id: config/source_event_idx vector → attr →
-        positional event_num fallback (D26)."""
+    def _event_key(self, sub, file_idx, event_num):
+        """``(file_index, source_event_idx)`` — the within-config identity key.
+
+        ``file_index`` is the intrinsic shard id from the file's config attr
+        (falls back to the source-relative file position). ``source_event_idx``
+        resolves from the config vector (WAND), else
+        ``global_event_offset + event_num`` (doraemon — shard-local, hence the
+        file_index is what makes the full identity unique), else the event
+        number. All inputs intrinsic → identity stable under shard
+        reorder/add-remove (F1)."""
         reader = sub._canonical_reader
         try:
-            sei_vec = read_shard_meta(
-                reader.h5_files[file_idx]).get('source_event_idx')
+            meta = read_shard_meta(reader.h5_files[file_idx])
         except Exception:
-            sei_vec = None
+            meta = {}
+        file_index = meta.get('file_index')
+        if file_index is None:
+            file_index = file_idx
+        sei_vec = meta.get('source_event_idx')
+        offset = meta.get('global_event_offset')
         if sei_vec is not None and 0 <= event_num < len(sei_vec):
-            return int(sei_vec[event_num])
-        return int(event_num)
-
-    def _holdout_role(self, config_id, sei):
-        """Role this event belongs to, from the hash. None → no holdout
-        configured (all 'train')."""
-        h = self._holdout
-        if not h:
-            return 'train'
-        seed = int(h.get('seed', 0))
-        u = _holdout_uniform(seed, config_id, sei)
-        if 'n_per_config' in h:
-            # handled in _build_data_list (needs all events of a source)
-            return None
-        tr, va, te = h.get('fractions', (0.9, 0.05, 0.05))
-        if u < tr:
-            return 'train'
-        if u < tr + va:
-            return 'val'
-        return 'test'
+            sei = int(sei_vec[event_num])
+        elif offset is not None:
+            sei = int(offset) + int(event_num)
+        else:
+            sei = int(event_num)
+        return int(file_index), sei
 
     def _build_data_list(self):
         """Per source: identity → holdout role → keep matching split; then
@@ -243,8 +243,8 @@ class MultiModalEventDataset(Dataset):
             rows = []          # (local_idx, sei, u)
             for local_idx in range(len(sub)):
                 file_idx, event_num = self._event_loc(sub, local_idx)
-                sei = self._source_event_idx(sub, file_idx, event_num)
-                u = _holdout_uniform(seed, cid, sei)
+                file_index, sei = self._event_key(sub, file_idx, event_num)
+                u = _holdout_uniform(seed, (cid, file_index, sei))
                 rows.append((local_idx, sei, u))
 
             if n_per_config is not None and self._holdout:
@@ -305,12 +305,13 @@ class MultiModalEventDataset(Dataset):
     # ------------------------------------------------------------------
 
     def event_identity(self, idx):
-        """Stable ``(config_id, source_event_idx)`` for a dataset index."""
+        """Stable, unique ``(config_id, file_index, source_event_idx)`` for a
+        dataset index — invariant to shard reorder/add-remove (F1)."""
         source_idx, local_idx = self.data_list[idx % len(self.data_list)]
         sub = self.datasets[source_idx]['dataset']
         file_idx, event_num = self._event_loc(sub, local_idx)
-        sei = self._source_event_idx(sub, file_idx, event_num)
-        return (self.datasets[source_idx]['config_id'], sei)
+        file_index, sei = self._event_key(sub, file_idx, event_num)
+        return (self.datasets[source_idx]['config_id'], file_index, sei)
 
     def get_data_name(self, idx):
         source_idx, local_idx = self.data_list[idx % len(self.data_list)]

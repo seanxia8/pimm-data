@@ -62,6 +62,9 @@ def _stamp_source_event_idx(outdir, dataset_name, modalities, n_files,
                 continue
             with h5py.File(path, 'r+') as f:
                 cfg = f['config']
+                # file_index is intrinsic in real data (both detectors) and is
+                # part of the stable event identity (F1) — stamp it here too.
+                cfg.attrs['file_index'] = file_idx
                 if 'source_event_idx' in cfg:
                     del cfg['source_event_idx']
                 cfg.create_dataset('source_event_idx', data=sei)

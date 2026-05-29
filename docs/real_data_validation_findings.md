@@ -99,6 +99,68 @@ their fixes/decisions.
   (and re-tune `scale`) if a task must resolve the tail. Clipping is covered by
   `test_relative_log_normalize_handles_negatives_no_nan`.
 
+## Low (F8–F16)
+
+Fixed (code) — each a clean, low-risk win:
+
+- **F13 — `volume=` filter leaked the other volume's bridges.** With `volume=0`,
+  the hits reader still loaded `group_to_track_v1` / `deposit_to_group_v1` /
+  `qs_fractions_v1` into `data['bridges']`, though no v1 points are loaded.
+  Harmless to correctness but wasted I/O + confusing payload. `_build_bridges`
+  now keeps only the selected volume's `*_v{N}` tables.
+  Test: `test_volume_filter_prunes_bridges`.
+
+- **F15 — hits `_detect_readout_type` bypassed the A1 cache.** It opened the
+  first shard directly to read the `readout_type` attr (the sensor reader uses
+  `read_shard_meta`). Now takes the cached `config_attrs` fast path and only
+  opens to scan plane datasets when the attr is absent. **Real doraemon:**
+  returns `wire` from the cache, no extra open.
+
+- **F16 — `min_deposits` index scan bypassed the A1 cache.** The
+  `min_deposits>0` branch opened every shard and looped per-event `n_actual`
+  (~75 ms/file, the dominant index-build cost). New cached
+  `read_deposit_counts(path)` memoizes the per-event per-volume counts by
+  `(path, mtime, size)`, so train/val/test (and tiered) datasets over the same
+  shards share one scan. Volume-aware semantics preserved.
+  **Real doraemon:** 800 events indexed, cache reused, filtered read works.
+  Tests: `test_min_deposits_cached_scan_matches_direct`.
+
+Decision / documentation (no behavior change):
+
+- **F9 — `LogTransform.clip` and real PE.** Real WAND PE reaches ~424; ~0.1 % of
+  hits exceed the `max_val=50` default, mapping to ~+1.5 (outside `[-1, 1]`)
+  when `clip=False`. Documented in the `LogTransform` docstring: pass
+  `clip=True` (saturate at +1) or raise `max_val`; default left off for
+  back-compat — choose per task.
+
+- **F11 — schema version mismatch.** Fixtures/docstrings said
+  `format_version 3`; real WAND is `format_version 5`. The readers gate on
+  *structure*, not the version int (confirmed: F5/F6 validated on real fv5
+  files), so the fixtures now stamp 5 and the LUCiD test/docstrings say "v3+
+  schema; real WAND is fv5".
+
+- **F8 — v3 vertex / `is_primary` plumbing unvalidated on real data.** No
+  PILArNet-v3 / panda data exists in `neutrino_data`, so the
+  `_apply_to_v3_vertex` co-transforms + the `index_operator` carry branch are
+  green only on synthetic `vertex = coord.copy()`. The panda flip (de-fork
+  Step 3) is the first real exercise — call it out there.
+
+- **F10 — named keys are `(N, 1)`, bare keys are `(N,)`.** On real data bare
+  `segment`/`instance` are 1-D while `segment_pid`/`instance_*` are 2-D `(N, 1)`;
+  values match (`bare segment == segment_pid` confirmed). Left as-is — changing
+  a shape is exactly the kind of edit that breaks a downstream consumer
+  silently. Documented so consumers `.reshape(-1)` / `[:, None]` deliberately.
+
+- **F12 — run-nested layout + WAND units.** (a) Real doraemon is
+  `{modality}/run_NNNNNNNN/sim_*.h5`; pointing `data_root` at the modality dir
+  finds nothing. Workaround today: `split='run_NNNNNNNN'` (loads one run). A
+  cross-run glob is a deliberate *feature* (merge-all-runs semantics + the F1
+  identity interaction — safe on doraemon because `global_event_offset` makes
+  `sei` globally unique), not a cleanup; deferred for its own change. (b) WAND
+  coords are in **meters** (detector spans ~±10 m), so `GridSample`/voxel sizes
+  must be O(0.5) m there, not the LAr-cm scale — a config note for the LUCiD
+  pipeline.
+
 ## New finding — follow-up (not yet fixed)
 
 - **F17 — eager-open crash on dangling shards.** `_build_index` tolerates an

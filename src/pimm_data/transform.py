@@ -303,6 +303,18 @@ class NormalizeCoord(object):
 
 @TRANSFORMS.register_module()
 class LogTransform(object):
+    """Map an energy-like key to ``[-1, 1]`` (log or linear).
+
+    **Domain / clip (F9, D11).** The map normalizes ``[min_val, max_val]`` onto
+    ``[-1, 1]``; with ``clip=False`` (default) a value *above* ``max_val`` maps
+    *beyond* ``+1`` rather than saturating. On real WAND PE this bites — PE
+    reaches ~424 and ~0.1% of hits exceed the ``max_val=50`` default, landing
+    near ``+1.5`` outside the model's expected range. Pass ``clip=True`` to
+    clamp into-domain first (those points saturate at ``+1``), or raise
+    ``max_val``. Left default-off to preserve historical behavior; choose
+    deliberately per task.
+    """
+
     def __init__(self, min_val=1.0e-2, max_val=20.0, log=True, keys=("energy",),
                  clip=False):
         self.min_val = min_val

@@ -1,4 +1,7 @@
-"""Tests for LUCiDDataset on format_version=3 data (edep/sensor/hits/labl)."""
+"""Tests for LUCiDDataset on the v3+ schema (edep/sensor/hits/labl).
+
+Real WAND is ``format_version 5``; the readers gate on structure, not the
+version int, so the fixtures stamp 5 and the same code reads both."""
 
 import numpy as np
 import pytest

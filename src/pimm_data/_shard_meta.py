@@ -19,6 +19,45 @@ import numpy as np
 import h5py
 
 _CACHE = {}
+_DEPOSIT_CACHE = {}
+
+
+def read_deposit_counts(path):
+    """Per-present-event deposit counts for the ``min_deposits`` filter (F16).
+
+    Returns ``{event_num: {'per_vol': [n_actual per volume id], 'positions':
+    int, 'n_volumes': int}}``, cached by ``(path, mtime_ns, size)``. ``per_vol``
+    is indexed by volume id (0 for an absent volume), so a ``volume=`` filter
+    selects ``per_vol[volume]`` correctly.
+
+    Reading per-event ``n_actual`` attrs is the dominant index-build cost when
+    ``min_deposits>0`` (≈75 ms/file on SDF). Memoizing it lets train/val/test
+    (and tiered medium/high) datasets built over the same shards share one
+    scan instead of repeating it per construction.
+    """
+    st = os.stat(path)
+    key = (path, st.st_mtime_ns, st.st_size)
+    hit = _DEPOSIT_CACHE.get(key)
+    if hit is not None:
+        return hit
+    counts = {}
+    with h5py.File(path, 'r', libver='latest', swmr=True) as f:
+        n_volumes = (int(f['config'].attrs.get('n_volumes', 1))
+                     if 'config' in f else 1)
+        for k in f.keys():
+            if not k.startswith('event_'):
+                continue
+            num = int(k.rsplit('_', 1)[1])
+            evt = f[k]
+            per_vol = [
+                (int(evt[f'volume_{v}'].attrs.get('n_actual', 0))
+                 if f'volume_{v}' in evt else 0)
+                for v in range(n_volumes)]
+            pos = evt['positions'].shape[0] if 'positions' in evt else 0
+            counts[num] = {'per_vol': per_vol, 'positions': pos,
+                           'n_volumes': n_volumes}
+    _DEPOSIT_CACHE[key] = counts
+    return counts
 
 
 def read_shard_meta(path):
@@ -66,3 +105,4 @@ def read_shard_meta(path):
 def clear_cache():
     """Drop all memoized shard metadata (test isolation / freed handles)."""
     _CACHE.clear()
+    _DEPOSIT_CACHE.clear()

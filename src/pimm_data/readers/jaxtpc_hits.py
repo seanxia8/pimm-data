@@ -114,11 +114,15 @@ class JAXTPCHitsReader:
         """
         for path in self.h5_files:
             try:
+                # Fast path via the A1 cache (F15): readout_type lives in the
+                # memoized config_attrs, so the common case adds no extra open
+                # (the sensor reader already takes this path). Only scan plane
+                # datasets when the attr is absent.
+                rt = str(read_shard_meta(path)['config_attrs'].get(
+                    'readout_type', ''))
+                if rt in ('wire', 'pixel'):
+                    return rt
                 with h5py.File(path, 'r', libver='latest', swmr=True) as f:
-                    if 'config' in f and 'readout_type' in f['config'].attrs:
-                        rt = str(f['config'].attrs['readout_type'])
-                        if rt in ('wire', 'pixel'):
-                            return rt
                     for ek in f:
                         if not ek.startswith('event_'):
                             continue

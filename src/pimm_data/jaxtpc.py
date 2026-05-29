@@ -393,12 +393,20 @@ class JAXTPCDataset(DefaultDataset):
         return by_volume
 
     def _build_bridges(self, hits_raw):
-        """Extract per-volume bridge arrays (g2t, deposit_to_group, qs_fractions)."""
+        """Extract per-volume bridge arrays (g2t, deposit_to_group, qs_fractions).
+
+        Under a ``volume=`` filter (F13), keep only that volume's bridges — the
+        hits reader still loads every volume's ``*_v{N}`` tables, but the other
+        volumes' points are not loaded, so carrying their group machinery is
+        wasted payload that confuses downstream consumers."""
+        want = None if self._volume is None else str(self._volume)
         bridges = {}
         for k, v in hits_raw.items():
             if (k.startswith('group_to_track_v')
                     or k.startswith('deposit_to_group_v')
                     or k.startswith('qs_fractions_v')):
+                if want is not None and k.rsplit('_v', 1)[1] != want:
+                    continue
                 bridges[k] = v
         return bridges
 

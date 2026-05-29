@@ -546,7 +546,7 @@ def _write_lucid_edep(path, events):
     with h5py.File(path, 'w') as f:
         cfg = f.create_group('config')
         cfg.attrs['n_events'] = len(events)
-        cfg.attrs['format_version'] = 3
+        cfg.attrs['format_version'] = 5   # match real WAND (readers are version-agnostic)
         for i, evt in enumerate(events):
             seg = evt['edep']
             g = f.create_group(f'event_{i:03d}')
@@ -573,7 +573,7 @@ def _write_lucid_sensor(path, events, pmt_positions):
         cfg = f.create_group('config')
         cfg.attrs['n_events'] = len(events)
         cfg.attrs['n_sensors'] = int(pmt_positions.shape[0])
-        cfg.attrs['format_version'] = 3
+        cfg.attrs['format_version'] = 5   # match real WAND (readers are version-agnostic)
         cfg.create_dataset('sensor_positions', data=pmt_positions)
         for i, evt in enumerate(events):
             s = evt['sensor']
@@ -588,7 +588,7 @@ def _write_lucid_hits(path, events, pmt_positions):
         cfg = f.create_group('config')
         cfg.attrs['n_events'] = len(events)
         cfg.attrs['n_sensors'] = int(pmt_positions.shape[0])
-        cfg.attrs['format_version'] = 3
+        cfg.attrs['format_version'] = 5   # match real WAND (readers are version-agnostic)
         cfg.create_dataset('sensor_positions', data=pmt_positions)
         for i, evt in enumerate(events):
             s = evt['hits']
@@ -603,7 +603,7 @@ def _write_lucid_labl(path, events):
     with h5py.File(path, 'w') as f:
         cfg = f.create_group('config')
         cfg.attrs['n_events'] = len(events)
-        cfg.attrs['format_version'] = 3
+        cfg.attrs['format_version'] = 5   # match real WAND (readers are version-agnostic)
         for i, evt in enumerate(events):
             l = evt['labl']
             g = f.create_group(f'event_{i:03d}')

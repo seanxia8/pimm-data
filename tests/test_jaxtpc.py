@@ -86,3 +86,44 @@ def test_empty_modalities_raises(jaxtpc_data_root):
 def test_unknown_modality_raises(jaxtpc_data_root):
     with pytest.raises(ValueError, match='Unknown'):
         make_ds(jaxtpc_data_root, modalities=('edep', 'mystery'))
+
+
+def test_volume_filter_prunes_bridges(tmp_path):
+    """F13: under a volume= filter, bridges carry only that volume's group
+    machinery — not the other volume's (whose points are never loaded)."""
+    from pimm_data.testing import make_jaxtpc_sample
+    root = make_jaxtpc_sample(str(tmp_path), n_events=2, n_volumes=2)
+    kw = dict(data_root=root, split='', dataset_name='sim',
+              modalities=('hits', 'labl'))
+    b_all = JAXTPCDataset(**kw).get_data(0)['bridges']
+    b_v0 = JAXTPCDataset(volume=0, **kw).get_data(0)['bridges']
+    # all-volumes payload spans both volumes...
+    assert any(k.endswith('_v1') for k in b_all)
+    assert any(k.endswith('_v0') for k in b_all)
+    # ...volume=0 payload keeps v0 tables and drops v1 (no orphan machinery).
+    assert any(k.endswith('_v0') for k in b_v0)
+    assert all(not k.endswith('_v1') for k in b_v0)
+
+
+def test_min_deposits_cached_scan_matches_direct(tmp_path):
+    """F16: the cached deposit-count scan produces the same min_deposits filter
+    as a direct per-event n_actual read, and the scan is memoized."""
+    import os
+    import h5py
+    from pimm_data.testing import make_jaxtpc_sample
+    from pimm_data._shard_meta import read_deposit_counts, clear_cache
+    clear_cache()
+    root = make_jaxtpc_sample(str(tmp_path), n_events=4, n_volumes=2)
+    edep = os.path.join(root, 'edep', 'sim_edep_0000.h5')
+    # zero event_001's deposits so min_deposits=1 must drop exactly it
+    with h5py.File(edep, 'r+') as f:
+        for vk in [k for k in f['event_001'] if k.startswith('volume_')]:
+            f['event_001'][vk].attrs['n_actual'] = 0
+    clear_cache()
+    ds = JAXTPCDataset(data_root=root, split='', dataset_name='sim',
+                       modalities=('edep',), min_deposits=1)
+    names = {ds.get_data_name(i) for i in range(len(ds))}
+    assert len(ds) == 3
+    assert not any('evt001' in n for n in names)     # the zeroed event dropped
+    # the scan is cached (same object on a second call → shared across splits)
+    assert read_deposit_counts(edep) is read_deposit_counts(edep)

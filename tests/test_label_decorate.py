@@ -112,3 +112,42 @@ def test_lucid_label_config_edep(tmp_path):
     # named instance_particle must equal that resolved index.
     assert edep["instance_particle"][:, 0].tolist() == \
         edep["particle_idx"].tolist()
+
+
+# ---------------------------------------------------------------------------
+# JAXTPCDataset opt-in label_config (value-keyed, per-volume)
+# ---------------------------------------------------------------------------
+
+def test_jaxtpc_label_config_named_keys(tmp_path):
+    from pimm_data.jaxtpc import JAXTPCDataset
+    from pimm_data.testing import make_jaxtpc_sample
+    root = make_jaxtpc_sample(str(tmp_path), n_events=2, n_volumes=2)
+    cfg = [
+        dict(out="segment_pid", scope="point", source=("track", "pdg")),
+        dict(out="instance_interaction", scope="point",
+             source=("track", "interaction")),
+    ]
+    ds = JAXTPCDataset(data_root=root, split="",
+                       modalities=("edep", "hits", "labl"),
+                       dataset_name="sim", label_config=cfg)
+    sample = ds.get_data(0)
+    for stream in ("edep", "hits"):
+        s = sample[stream]
+        assert "segment_pid" in s and "instance_interaction" in s
+        # named keys are (N,1); bare segment still present (back-compat)
+        assert s["segment_pid"].shape == (s["coord"].shape[0], 1)
+        assert "segment" in s
+    # segment_pid (track_pdg axis) should equal the bare segment when
+    # label_key='pdg' (the default) — same gather, different key spelling.
+    edep = sample["edep"]
+    assert edep["segment_pid"][:, 0].tolist() == edep["segment"].tolist()
+
+
+def test_jaxtpc_label_config_default_off(tmp_path):
+    from pimm_data.jaxtpc import JAXTPCDataset
+    from pimm_data.testing import make_jaxtpc_sample
+    root = make_jaxtpc_sample(str(tmp_path), n_events=2)
+    ds = JAXTPCDataset(data_root=root, split="",
+                       modalities=("edep", "labl"), dataset_name="sim")
+    edep = ds.get_data(0)["edep"]
+    assert "segment" in edep and "segment_pid" not in edep

@@ -101,6 +101,7 @@ class JAXTPCDataset(DefaultDataset):
         dataset_name='sim',
         volume=None,
         label_key='pdg',
+        label_config=None,
         min_deposits=0,
         include_physics=True,
         label_keys=None,
@@ -127,6 +128,7 @@ class JAXTPCDataset(DefaultDataset):
         self._dataset_name = dataset_name
         self._volume = volume
         self._label_key = label_key
+        self._label_config = label_config
         self._min_deposits = min_deposits
         self._include_physics = include_physics
         self._label_keys = label_keys
@@ -313,6 +315,10 @@ class JAXTPCDataset(DefaultDataset):
                 sub['volume_id'], labl_by_volume)
             sub['segment'] = segment
             sub['instance'] = instance
+            for out, lk in self._track_axes():
+                seg_axis, _ = self._decorate_edep_from_labl(
+                    sub['volume_id'], labl_by_volume, label_key=lk)
+                sub[out] = seg_axis[:, None]
 
         return sub
 
@@ -351,6 +357,10 @@ class JAXTPCDataset(DefaultDataset):
         if labl_by_volume:
             sub['segment'] = self._decorate_hits_from_labl(
                 planes, raw, hits_raw, labl_by_volume)
+            for out, lk in self._track_axes():
+                sub[out] = self._decorate_hits_from_labl(
+                    planes, raw, hits_raw, labl_by_volume,
+                    label_key=lk)[:, None]
         return sub
 
     def _coord_keys(self):
@@ -443,18 +453,38 @@ class JAXTPCDataset(DefaultDataset):
 
         return planes, coord, energy, plane_id, raw_nested
 
-    def _decorate_edep_from_labl(self, volume_id, labl_by_volume):
+    def _track_axes(self):
+        """(out_key, track_column) for each point-scope ``label_config`` axis
+        sourced from a ``('track', col)`` column — drives the value-keyed
+        per-volume gather to emit named schema keys (e.g. ``segment_pid`` from
+        ``track_pdg``, ``instance_interaction`` from ``track_interaction``)."""
+        if not self._label_config:
+            return []
+        axes = []
+        for spec in self._label_config:
+            if spec.get('scope', 'point') != 'point':
+                continue
+            src = spec.get('source')
+            if (isinstance(src, (tuple, list)) and len(src) == 2
+                    and src[0] == 'track'):
+                axes.append((spec['out'], src[1]))
+        return axes
+
+    def _decorate_edep_from_labl(self, volume_id, labl_by_volume,
+                                 label_key=None):
         """Broadcast per-track labl data onto each edep deposit.
 
         Uses ``labl[vN]['deposit_to_track']`` (row-aligned to the volume's
         edep deposits) as the per-deposit FK, then looks up
         ``labl[vN]['track_{label_key}']`` via binary search on ``track_ids``.
+        ``label_key`` defaults to ``self._label_key``; pass an explicit key to
+        gather a different axis (used by ``label_config``).
         """
         vid_flat = volume_id.ravel()
         n_total = vid_flat.shape[0]
         instance = np.full(n_total, -1, dtype=np.int32)
         segment = np.full(n_total, -1, dtype=np.int32)
-        meta_col = f'track_{self._label_key}'
+        meta_col = f'track_{label_key or self._label_key}'
 
         for vkey, vdata in labl_by_volume.items():
             vol_num = int(vkey[1:])
@@ -485,9 +515,12 @@ class JAXTPCDataset(DefaultDataset):
         return segment, instance
 
     def _decorate_hits_from_labl(self, planes, raw_nested, hits_flat,
-                                 labl_by_volume):
-        """Per-hits-entry segment label via group_to_track → track lookup."""
-        meta_col = f'track_{self._label_key}'
+                                 labl_by_volume, label_key=None):
+        """Per-hits-entry segment label via group_to_track → track lookup.
+
+        ``label_key`` defaults to ``self._label_key``; pass an explicit key to
+        gather a different axis (used by ``label_config``)."""
+        meta_col = f'track_{label_key or self._label_key}'
         all_labels = []
         for plane in planes:
             cols = raw_nested[plane]

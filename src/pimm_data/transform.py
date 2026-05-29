@@ -42,6 +42,21 @@ except Exception:
 _INDEX_SCHEMA_PREFIXES = ("segment", "instance", "target")
 _INDEX_PER_POINT_KEYS = ("particle_idx", "sensor_idx", "plane_id")
 
+# Keys index_operator always carries through a point subsample. The schema
+# axes (segment_*/instance_*/target_*) and per-point FK columns are NOT listed
+# here — _augment_index_valid_keys adds whichever are present, per-point-guarded
+# (so a per-event target_* is not subset). One source of truth for the schema
+# axes, instead of literal ∪ predicate with a hidden overlap.
+_DEFAULT_INDEX_VALID_KEYS = [
+    "coord", "color", "normal", "strength", "energy", "local_shape",
+    "momentum",
+    # JAXTPCDataset physics columns
+    "track_ids", "group_ids", "pdg", "volume_id", "interaction_ids",
+    "ancestor_track_ids", "charge", "photons", "qs_fractions", "t0_us",
+    "dx", "theta", "phi",
+    "vertex",
+]
+
 
 def _augment_index_valid_keys(data_dict):
     """Append present schema/FK keys to ``index_valid_keys`` (D25).
@@ -96,41 +111,48 @@ def _translate_axis(points, dim, value):
     return points
 
 
+def _negate_axis(points, dim):
+    points = points.copy()
+    points[:, dim] = -points[:, dim]
+    return points
+
+
+_ROT_AXIS_DIM = {"x": 0, "y": 1, "z": 2}
+
+
+def _rotation_matrix(axis, angle):
+    """3×3 rotation about a principal ``axis`` (radians)."""
+    c, s = np.cos(angle), np.sin(angle)
+    if axis == "x":
+        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+    if axis == "y":
+        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    if axis == "z":
+        return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+    raise NotImplementedError
+
+
+def _rotate_about_center(data_dict, rot_t, center=None):
+    """Rotate ``coord`` (+ co-transform ``vertex`` and ``normal``) by ``rot_t``
+    about ``center`` (bbox midpoint when None). Shared by the rotate transforms."""
+    if "coord" in data_dict:
+        if center is None:
+            center = (data_dict["coord"].min(axis=0)
+                      + data_dict["coord"].max(axis=0)) / 2
+        center = np.asarray(center)
+        data_dict["coord"] = (data_dict["coord"] - center) @ rot_t.T + center
+        _apply_to_v3_vertex(
+            data_dict, lambda v: (v - center) @ rot_t.T + center)
+    if "normal" in data_dict:
+        data_dict["normal"] = data_dict["normal"] @ rot_t.T
+    return data_dict
+
+
 def index_operator(data_dict, index, duplicate=False):
     # index selection operator for keys in "index_valid_keys"
     # custom these keys by "Update" transform in config
     if "index_valid_keys" not in data_dict:
-        data_dict["index_valid_keys"] = [
-            "coord",
-            "color",
-            "normal",
-            "strength",
-            "segment",
-            "instance",
-            "energy",
-            "local_shape",
-            "segment_motif",
-            "segment_pid",
-            "instance_particle",
-            "instance_interaction",
-            "momentum",
-            # JAXTPCDataset keys (JAXTPC)
-            "track_ids",
-            "group_ids",
-            "pdg",
-            "volume_id",
-            "interaction_ids",
-            "ancestor_track_ids",
-            "charge",
-            "photons",
-            "qs_fractions",
-            "t0_us",
-            "dx",
-            "theta",
-            "phi",
-            "segment_interaction",
-            "vertex",
-        ]
+        data_dict["index_valid_keys"] = list(_DEFAULT_INDEX_VALID_KEYS)
     # PILArNet v3 carries a per-point primary-particle flag alongside the
     # cluster vertex; keep it aligned through subsampling/cropping.
     if data_dict.get("revision") == "v3" and "is_primary" in data_dict \
@@ -441,34 +463,20 @@ class CenterShift(object):
         
     def __call__(self, data_dict):
         if "coord" in data_dict.keys():
-            for axis in self.axes:
-                if axis == "x":
-                    x_min, y_min, z_min = data_dict["coord"].min(axis=0)
-                    x_max, y_max, z_max = data_dict["coord"].max(axis=0)
-                    shift = (x_min + x_max) / 2
-                    data_dict["coord"][:, 0] -= shift
-                    _apply_to_v3_vertex(
-                        data_dict,
-                        lambda vertex, shift=shift: _translate_axis(
-                            vertex, 0, -shift))
-                elif axis == "y":
-                    x_min, y_min, z_min = data_dict["coord"].min(axis=0)
-                    x_max, y_max, z_max = data_dict["coord"].max(axis=0)
-                    shift = (y_min + y_max) / 2
-                    data_dict["coord"][:, 1] -= shift
-                    _apply_to_v3_vertex(
-                        data_dict,
-                        lambda vertex, shift=shift: _translate_axis(
-                            vertex, 1, -shift))
-                elif axis == "z":
-                    x_min, y_min, z_min = data_dict["coord"].min(axis=0)
-                    x_max, y_max, z_max = data_dict["coord"].max(axis=0)
-                    shift = (z_min + z_max) / 2
-                    data_dict["coord"][:, 2] -= shift
-                    _apply_to_v3_vertex(
-                        data_dict,
-                        lambda vertex, shift=shift: _translate_axis(
-                            vertex, 2, -shift))
+            # Each axis's center depends only on that axis's column (untouched
+            # by the other axes' shifts), so one min/max pass is equivalent to
+            # the old per-branch recompute.
+            centers = (data_dict["coord"].min(axis=0)
+                       + data_dict["coord"].max(axis=0)) / 2
+            for dim, ax in enumerate(("x", "y", "z")):
+                if ax not in self.axes:
+                    continue
+                shift = centers[dim]
+                data_dict["coord"][:, dim] -= shift
+                _apply_to_v3_vertex(
+                    data_dict,
+                    lambda vertex, dim=dim, shift=shift: _translate_axis(
+                        vertex, dim, -shift))
         return data_dict
 
 @TRANSFORMS.register_module()
@@ -600,33 +608,8 @@ class RandomRotate(object):
         if random.random() > self.p:
             return data_dict
         angle = np.random.uniform(self.angle[0], self.angle[1]) * np.pi
-        rot_cos, rot_sin = np.cos(angle), np.sin(angle)
-        if self.axis == "x":
-            rot_t = np.array([[1, 0, 0], [0, rot_cos, -rot_sin], [0, rot_sin, rot_cos]])
-        elif self.axis == "y":
-            rot_t = np.array([[rot_cos, 0, rot_sin], [0, 1, 0], [-rot_sin, 0, rot_cos]])
-        elif self.axis == "z":
-            rot_t = np.array([[rot_cos, -rot_sin, 0], [rot_sin, rot_cos, 0], [0, 0, 1]])
-        else:
-            raise NotImplementedError
-        if "coord" in data_dict.keys():
-            if self.center is None:
-                x_min, y_min, z_min = data_dict["coord"].min(axis=0)
-                x_max, y_max, z_max = data_dict["coord"].max(axis=0)
-                center = [(x_min + x_max) / 2, (y_min + y_max) / 2, (z_min + z_max) / 2]
-            else:
-                center = self.center
-            center = np.asarray(center)
-            data_dict["coord"] -= center
-            data_dict["coord"] = np.dot(data_dict["coord"], np.transpose(rot_t))
-            data_dict["coord"] += center
-            _apply_to_v3_vertex(
-                data_dict,
-                lambda vertex: np.dot(vertex - center, np.transpose(rot_t))
-                + center)
-        if "normal" in data_dict.keys():
-            data_dict["normal"] = np.dot(data_dict["normal"], np.transpose(rot_t))
-        return data_dict
+        return _rotate_about_center(
+            data_dict, _rotation_matrix(self.axis, angle), self.center)
 
 
 @TRANSFORMS.register_module()
@@ -644,33 +627,8 @@ class RandomRotateTargetAngle(object):
         if random.random() > self.p:
             return data_dict
         angle = np.random.choice(self.angle) * np.pi
-        rot_cos, rot_sin = np.cos(angle), np.sin(angle)
-        if self.axis == "x":
-            rot_t = np.array([[1, 0, 0], [0, rot_cos, -rot_sin], [0, rot_sin, rot_cos]])
-        elif self.axis == "y":
-            rot_t = np.array([[rot_cos, 0, rot_sin], [0, 1, 0], [-rot_sin, 0, rot_cos]])
-        elif self.axis == "z":
-            rot_t = np.array([[rot_cos, -rot_sin, 0], [rot_sin, rot_cos, 0], [0, 0, 1]])
-        else:
-            raise NotImplementedError
-        if "coord" in data_dict.keys():
-            if self.center is None:
-                x_min, y_min, z_min = data_dict["coord"].min(axis=0)
-                x_max, y_max, z_max = data_dict["coord"].max(axis=0)
-                center = [(x_min + x_max) / 2, (y_min + y_max) / 2, (z_min + z_max) / 2]
-            else:
-                center = self.center
-            center = np.asarray(center)
-            data_dict["coord"] -= center
-            data_dict["coord"] = np.dot(data_dict["coord"], np.transpose(rot_t))
-            data_dict["coord"] += center
-            _apply_to_v3_vertex(
-                data_dict,
-                lambda vertex: np.dot(vertex - center, np.transpose(rot_t))
-                + center)
-        if "normal" in data_dict.keys():
-            data_dict["normal"] = np.dot(data_dict["normal"], np.transpose(rot_t))
-        return data_dict
+        return _rotate_about_center(
+            data_dict, _rotation_matrix(self.axis, angle), self.center)
 
 
 @TRANSFORMS.register_module()
@@ -699,30 +657,16 @@ class RandomFlip(object):
 
     def __call__(self, data_dict):
         for axis in self.axes:
-            if axis == "x" and random.random() < self.p:
-                data_dict["coord"][:, 0] = -data_dict["coord"][:, 0]
+            dim = _ROT_AXIS_DIM.get(axis)
+            # unknown axis: skip without drawing (matches the old if/elif chain)
+            if dim is None:
+                continue
+            if random.random() < self.p:
+                data_dict["coord"][:, dim] = -data_dict["coord"][:, dim]
                 _apply_to_v3_vertex(
-                    data_dict,
-                    lambda vertex: np.column_stack(
-                        (-vertex[:, 0], vertex[:, 1], vertex[:, 2])))
+                    data_dict, lambda v, d=dim: _negate_axis(v, d))
                 if "normal" in data_dict.keys():
-                    data_dict["normal"][:, 0] = -data_dict["normal"][:, 0]
-            elif axis == "y" and random.random() < self.p:
-                data_dict["coord"][:, 1] = -data_dict["coord"][:, 1]
-                _apply_to_v3_vertex(
-                    data_dict,
-                    lambda vertex: np.column_stack(
-                        (vertex[:, 0], -vertex[:, 1], vertex[:, 2])))
-                if "normal" in data_dict.keys():
-                    data_dict["normal"][:, 1] = -data_dict["normal"][:, 1]
-            elif axis == "z" and random.random() < self.p:
-                data_dict["coord"][:, 2] = -data_dict["coord"][:, 2]
-                _apply_to_v3_vertex(
-                    data_dict,
-                    lambda vertex: np.column_stack(
-                        (vertex[:, 0], vertex[:, 1], -vertex[:, 2])))
-                if "normal" in data_dict.keys():
-                    data_dict["normal"][:, 2] = -data_dict["normal"][:, 2]
+                    data_dict["normal"][:, dim] = -data_dict["normal"][:, dim]
         return data_dict
 
 
@@ -1372,6 +1316,9 @@ class GridSample(object):
                         s = np.zeros(shape, dtype=np.float64)
                         np.add.at(s, voxel_of_point, vals)
                         c = count.reshape((-1,) + (1,) * (vals.ndim - 1))
+                        # Casts back to vals.dtype — an integer column's mean is
+                        # floored toward zero. Intended for float columns
+                        # (energy); use a float column if you need a true mean.
                         agg = (s / c).astype(vals.dtype)
                     else:  # "first"
                         agg = vals[idx_sort[first_sel]]

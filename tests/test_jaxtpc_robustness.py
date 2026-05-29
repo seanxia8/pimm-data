@@ -75,3 +75,31 @@ def test_reader_tolerates_missing_event(tmp_path, modality, reader_cls):
     assert r.indices[0].tolist() == [0, 2]   # gap skipped, order preserved
     r.read_event(0)                          # event_000
     r.read_event(1)                          # maps to event_002, no KeyError
+
+
+@pytest.mark.parametrize('modality,reader_cls', [
+    ('edep', JAXTPCEdepReader),
+    ('hits', JAXTPCHitsReader),
+])
+def test_reader_tolerates_dangling_shard(tmp_path, modality, reader_cls):
+    """F17: a globbed-but-unopenable shard (a symlink to a vanished source, as
+    on the WAND mount) contributes no events and must NOT crash worker init.
+
+    Eagerly opening every globbed path turned one dangling shard into a crash
+    that took down the whole reader, even though the index build already
+    tolerated it (empty index → searchsorted never lands there)."""
+    root = make_jaxtpc_sample(str(tmp_path), n_events=3, n_files=3)
+    mdir = os.path.join(root, modality)
+    victim = os.path.join(mdir, f'sim_{modality}_0001.h5')
+    os.remove(victim)
+    os.symlink(os.path.join(mdir, 'vanished_source.h5'), victim)  # dangling
+
+    r = reader_cls(data_root=mdir, split='', dataset_name='sim')
+    # the dangling shard is globbed but yields an empty index, kept positionally
+    assert len(r.indices) == 3 and len(r.indices[1]) == 0
+    # surviving shards 0 and 2 contribute their events; the dangler adds none
+    assert len(r) == 6
+    # worker init + every read works — the dangling shard is never opened
+    for i in range(len(r)):
+        r.read_event(i)
+    assert r._h5data[1] is None              # skipped, not a live (broken) handle

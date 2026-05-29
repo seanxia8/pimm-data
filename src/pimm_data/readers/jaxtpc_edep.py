@@ -15,7 +15,7 @@ import logging
 import numpy as np
 import h5py
 
-from .._shard_meta import read_shard_meta, read_deposit_counts
+from .._shard_meta import read_shard_meta, read_deposit_counts, open_event_files
 
 log = logging.getLogger(__name__)
 
@@ -127,10 +127,7 @@ class JAXTPCEdepReader:
 
     def h5py_worker_init(self):
         """Lazily open file handles (called after DataLoader fork)."""
-        self._h5data = [
-            h5py.File(p, 'r', libver='latest', swmr=True)
-            for p in self.h5_files
-        ]
+        self._h5data = open_event_files(self.h5_files, self.indices)
         self._initted = True
 
     def _locate_event(self, idx):

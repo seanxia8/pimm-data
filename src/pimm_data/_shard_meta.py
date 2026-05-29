@@ -102,6 +102,31 @@ def read_shard_meta(path):
     return meta
 
 
+def open_event_files(h5_files, indices):
+    """Open one h5py handle per shard, skipping shards with no events (F17).
+
+    A shard that failed to open during index build (dangling symlink, corrupt
+    file) gets an *empty* entry in ``indices``. ``searchsorted`` over the
+    cumulative lengths never lands on a zero-length shard, so ``_locate_event``
+    never dereferences its handle — which means eagerly opening every globbed
+    path at worker init is the only thing that turns one dangling shard into a
+    crash that takes down the whole reader. Returning ``None`` for those shards
+    keeps the rest of the dataset usable. Handles stay positionally aligned
+    with ``h5_files`` / ``indices``.
+
+    A shard that *does* contribute events but cannot be opened still raises
+    here — that is a real error (its indexed events are unreadable), not the
+    silent-truncation case this guards against.
+    """
+    handles = []
+    for i, p in enumerate(h5_files):
+        if i < len(indices) and len(indices[i]) == 0:
+            handles.append(None)
+            continue
+        handles.append(h5py.File(p, 'r', libver='latest', swmr=True))
+    return handles
+
+
 def clear_cache():
     """Drop all memoized shard metadata (test isolation / freed handles)."""
     _CACHE.clear()

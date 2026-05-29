@@ -22,7 +22,7 @@ import logging
 import numpy as np
 import h5py
 
-from .._shard_meta import read_shard_meta
+from .._shard_meta import read_shard_meta, open_event_files
 
 log = logging.getLogger(__name__)
 
@@ -102,14 +102,13 @@ class LUCiDSensorReader:
                  len(self.h5_files))
 
     def h5py_worker_init(self):
-        self._h5data = [
-            h5py.File(p, 'r', libver='latest', swmr=True)
-            for p in self.h5_files
-        ]
+        self._h5data = open_event_files(self.h5_files, self.indices)
         if self._pmt_positions is None:
-            cfg = self._h5data[0]['config']
-            if 'sensor_positions' in cfg:
-                self._pmt_positions = cfg['sensor_positions'][:].astype(
+            # First shard that actually opened (file 0 may be a skipped
+            # empty/dangling shard — F17). PMT geometry is shared across shards.
+            f0 = next((h for h in self._h5data if h is not None), None)
+            if f0 is not None and 'sensor_positions' in f0['config']:
+                self._pmt_positions = f0['config']['sensor_positions'][:].astype(
                     np.float32)
         self._initted = True
 

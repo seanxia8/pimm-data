@@ -18,7 +18,7 @@ import logging
 import numpy as np
 import h5py
 
-from .._shard_meta import read_shard_meta
+from .._shard_meta import read_shard_meta, open_event_files
 
 log = logging.getLogger(__name__)
 
@@ -94,10 +94,7 @@ class JAXTPCSensorReader:
                  self.cumulative_lengths[-1], len(self.h5_files))
 
     def h5py_worker_init(self):
-        self._h5data = [
-            h5py.File(p, 'r', libver='latest', swmr=True)
-            for p in self.h5_files
-        ]
+        self._h5data = open_event_files(self.h5_files, self.indices)
         self._initted = True
 
     def _locate_event(self, idx):

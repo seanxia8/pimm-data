@@ -158,6 +158,29 @@ def test_labl_ancestor_columns_present(lucid_data_root):
     assert primaries_p.size >= 0
 
 
+def test_reader_tolerates_dangling_shard(tmp_path):
+    """F17: a dangling LUCiD shard (symlink to a vanished source — the WAND
+    failure mode) is skipped, not crashed-on, even for the sensor reader whose
+    worker init reads PMT geometry from a shard handle. Here shard 0 (the one
+    the sensor reader would read geometry from) is the dangling one."""
+    import os
+    from pimm_data.testing import make_lucid_sample
+    from pimm_data.readers.lucid_sensor import LUCiDSensorReader
+    root = make_lucid_sample(str(tmp_path), n_events=3, n_files=3)
+    sdir = os.path.join(root, 'sensor')
+    victim = os.path.join(sdir, 'wc_sensor_0000.h5')   # file 0 → geometry source
+    os.remove(victim)
+    os.symlink(os.path.join(sdir, 'vanished_source.h5'), victim)
+
+    r = LUCiDSensorReader(data_root=sdir, split='', dataset_name='wc')
+    assert len(r.indices[0]) == 0 and len(r) == 6      # dangler contributes none
+    for i in range(len(r)):
+        r.read_event(i)                                 # no crash on any read
+    assert r._h5data[0] is None
+    # PMT geometry still resolved — from the first shard that actually opened
+    assert r._pmt_positions is not None
+
+
 def test_labl_per_interaction_surfaced(lucid_data_root):
     """F5: the per_interaction (per-neutrino-vertex) table is surfaced — vertex,
     neutrino kinematics, source_type, and the ragged primary_* CSR lists — and

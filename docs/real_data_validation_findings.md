@@ -161,18 +161,26 @@ Decision / documentation (no behavior change):
   must be O(0.5) m there, not the LAr-cm scale — a config note for the LUCiD
   pipeline.
 
-## New finding — follow-up (not yet fixed)
+## New finding — fixed
 
-- **F17 — eager-open crash on dangling shards.** `_build_index` tolerates an
-  unopenable shard (logs a warning, contributes 0 events), but
-  `h5py_worker_init` later opens *every* globbed file and raises on the first
-  dangling one. On WAND this filesystem, many shards are symlinks to a source
-  mount that is intermittently absent, so a single missing shard crashes the
-  whole reader at worker init instead of being skipped. Pre-existing (not
-  introduced by Step 1); affects the LUCiD readers (and likely JAXTPC). Fix would
-  drop unopenable files from `h5_files` in `_build_index` (keeping
-  `cumulative_lengths`/`indices` aligned) so worker init only opens survivors.
-  Deferred — flagged for the next robustness pass.
+- **F17 — eager-open crash on dangling shards.** `_build_index` tolerated an
+  unopenable shard (logged a warning, contributed 0 events — its index is
+  empty, so `searchsorted` never lands there), but `h5py_worker_init` then
+  opened *every* globbed file and raised on the first dangling one. On the WAND
+  filesystem most shards are symlinks to a source mount that is intermittently
+  absent, so a single missing shard crashed the whole reader at worker init.
+  Pre-existing (not introduced by Step 1); all 8 readers shared the same eager
+  `[h5py.File(p) for p in h5_files]`.
+  **Fix:** a shared `open_event_files(h5_files, indices)` (in `_shard_meta`)
+  opens a handle per shard but returns `None` for any shard with an empty index
+  — those are never dereferenced by `_locate_event`. All 8 readers route worker
+  init through it; `lucid_sensor` reads its PMT geometry from the first shard
+  that actually opened. A shard that *does* contribute events but won't open
+  still raises (its events are genuinely unreadable — not silent truncation).
+  **Validated on real WAND:** the `config_000001/labl` dir (135 globbed, 127
+  dangling, 8 live) now builds, skips the 127, and reads 5952 events from the 8
+  live shards — first + last end-to-end — with no crash. Tests:
+  `test_reader_tolerates_dangling_shard` (JAXTPC edep/hits + LUCiD sensor).
 
 ## Takeaway
 

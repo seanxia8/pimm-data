@@ -18,6 +18,8 @@ import logging
 import numpy as np
 import h5py
 
+from .._shard_meta import read_shard_meta
+
 log = logging.getLogger(__name__)
 
 
@@ -74,14 +76,12 @@ class JAXTPCSensorReader:
 
         for h5_path in self.h5_files:
             try:
-                with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
-                    # Index from event groups actually present, not
-                    # arange(n_events): production may skip an event (e.g.
-                    # capacity overflow), leaving a gap with n_events
-                    # unchanged — arange would then KeyError at read time.
-                    index = np.array(sorted(
-                        int(k.rsplit('_', 1)[1]) for k in f.keys()
-                        if k.startswith('event_')), dtype=np.int64)
+                # Index from event groups actually present, not
+                # arange(n_events): production may skip an event (e.g.
+                # capacity overflow), leaving a gap with n_events unchanged —
+                # arange would then KeyError at read time. (Cached scan; the
+                # readout-type probe reuses the same open — A1.)
+                index = read_shard_meta(h5_path)['present_events']
             except Exception as e:
                 log.warning("Error processing %s: %s", h5_path, e)
                 index = np.array([], dtype=np.int64)
@@ -116,11 +116,16 @@ class JAXTPCSensorReader:
         """
         for path in self.h5_files:
             try:
+                # Common case: the readout_type config attr is present — the
+                # cached meta (already read in _build_index) answers without
+                # a second file open (A1).
+                rt = read_shard_meta(path)['config_attrs'].get('readout_type')
+                if rt is not None:
+                    rt = str(rt)
+                    if rt in ('wire', 'pixel'):
+                        return rt
+                # Attr absent (older files) → inspect plane datasets.
                 with h5py.File(path, 'r', libver='latest', swmr=True) as f:
-                    if 'config' in f and 'readout_type' in f['config'].attrs:
-                        rt = str(f['config'].attrs['readout_type'])
-                        if rt in ('wire', 'pixel'):
-                            return rt
                     for ek in f:
                         if not ek.startswith('event_'):
                             continue

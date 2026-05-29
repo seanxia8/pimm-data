@@ -21,6 +21,8 @@ import logging
 import numpy as np
 import h5py
 
+from .._shard_meta import read_shard_meta
+
 log = logging.getLogger(__name__)
 
 
@@ -74,14 +76,11 @@ class JAXTPCHitsReader:
 
         for h5_path in self.h5_files:
             try:
-                with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
-                    # Index from event groups actually present, not
-                    # arange(n_events): production may skip an event (e.g.
-                    # capacity overflow), leaving a gap with n_events
-                    # unchanged — arange would then KeyError at read time.
-                    index = np.array(sorted(
-                        int(k.rsplit('_', 1)[1]) for k in f.keys()
-                        if k.startswith('event_')), dtype=np.int64)
+                # Index from event groups actually present, not
+                # arange(n_events): production may skip an event (e.g.
+                # capacity overflow), leaving a gap with n_events unchanged —
+                # arange would then KeyError at read time. (Cached scan — A1.)
+                index = read_shard_meta(h5_path)['present_events']
             except Exception as e:
                 log.warning("Error processing %s: %s", h5_path, e)
                 index = np.array([], dtype=np.int64)

@@ -48,6 +48,7 @@ import numpy as np
 
 from .builder import DATASETS
 from .defaults import DefaultDataset
+from ._joint_index import build_joint_index
 from .readers.lucid_edep import LUCiDEdepReader
 from .readers.lucid_sensor import LUCiDSensorReader
 from .readers.lucid_hits import LUCiDHitsReader
@@ -104,12 +105,23 @@ class LUCiDDataset(DefaultDataset):
         max_len=-1,
         ignore_index=-1,
         cache=False,
+        strict_lengths=False,
     ):
         self._modalities = tuple(modalities)
         self._validate_modalities(self._modalities)
 
+        # A3: min_segments filters on edep segment counts, so it is a silent
+        # no-op without the edep modality. Fail loud instead.
+        if min_segments > 0 and 'edep' not in self._modalities:
+            raise ValueError(
+                f"min_segments={min_segments} filters on edep segment counts "
+                f"but modalities={self._modalities} does not include 'edep'. "
+                "Add 'edep' to modalities or set min_segments=0.")
+
         self._dataset_name = dataset_name
+        self._min_segments = min_segments
         self._max_len = max_len
+        self._strict_lengths = strict_lengths
         self._source_data_root = data_root
         self._source_split = split
 
@@ -141,12 +153,21 @@ class LUCiDDataset(DefaultDataset):
                 data_root=self._modality_root('labl'), split=split,
                 dataset_name=dataset_name)
 
-        active_readers = [r for r in (self.edep_reader, self.sensor_reader,
-                                      self.hits_reader, self.labl_reader)
-                          if r is not None]
         self._canonical_reader = (self.edep_reader or self.hits_reader
                                   or self.sensor_reader or self.labl_reader)
-        self._n_events = min(len(r) for r in active_readers)
+        # Phase A / D42: one joint cross-modality event index injected into
+        # every reader, so a global idx maps to the SAME physics event in all
+        # modalities (replaces `_n_events = min(len(r) ...)`, which desynced
+        # under min_segments>0 or a gap present in some-but-not-all modalities).
+        named = [(n, r) for n, r in (
+            ('edep', self.edep_reader), ('sensor', self.sensor_reader),
+            ('hits', self.hits_reader), ('labl', self.labl_reader))
+            if r is not None]
+        self._n_events = build_joint_index(
+            named, strict_lengths=strict_lengths,
+            source_label=f"LUCiDDataset({data_root!r})",
+            filter_label=(f"min_segments={min_segments}"
+                          if min_segments > 0 else ''))
 
         super().__init__(
             split=split, data_root=data_root,

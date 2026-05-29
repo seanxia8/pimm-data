@@ -46,6 +46,7 @@ import numpy as np
 
 from .builder import DATASETS
 from .defaults import DefaultDataset
+from ._joint_index import build_joint_index
 from .readers.jaxtpc_edep import JAXTPCEdepReader
 from .readers.jaxtpc_sensor import JAXTPCSensorReader
 from .readers.jaxtpc_labl import JAXTPCLablReader
@@ -110,9 +111,18 @@ class JAXTPCDataset(DefaultDataset):
         max_len=-1,
         ignore_index=-1,
         cache=False,
+        strict_lengths=False,
     ):
         self._modalities = tuple(modalities)
         self._validate_modalities(self._modalities)
+
+        # A3: min_deposits filters on edep deposit counts, so it is a no-op
+        # (and silently so) without the edep modality. Fail loud instead.
+        if min_deposits > 0 and 'edep' not in self._modalities:
+            raise ValueError(
+                f"min_deposits={min_deposits} filters on edep deposit counts "
+                f"but modalities={self._modalities} does not include 'edep'. "
+                "Add 'edep' to modalities or set min_deposits=0.")
 
         self._dataset_name = dataset_name
         self._volume = volume
@@ -121,6 +131,7 @@ class JAXTPCDataset(DefaultDataset):
         self._include_physics = include_physics
         self._label_keys = label_keys
         self._max_len = max_len
+        self._strict_lengths = strict_lengths
         self._source_data_root = data_root
         self._source_split = split
 
@@ -172,12 +183,15 @@ class JAXTPCDataset(DefaultDataset):
             if self.hits_reader is not None:
                 self.hits_reader.planes = planes
 
-        active_readers = [r for r in (self.edep_reader, self.sensor_reader,
-                                       self.labl_reader, self.hits_reader)
-                          if r is not None]
         self._canonical_reader = (self.edep_reader or self.sensor_reader
                                   or self.hits_reader or self.labl_reader)
-        self._n_events = min(len(r) for r in active_readers)
+        # Phase A / D42: build ONE joint cross-modality event index and inject
+        # it into every reader, so a single global idx maps to the SAME
+        # physics event in all modalities. (Replaces the old
+        # `_n_events = min(len(r) ...)`, which left each reader mapping idx
+        # through its own present-key index → silent desync under
+        # min_deposits>0 or a gap present in some-but-not-all modalities.)
+        self._build_joint_index()
 
         super().__init__(
             split=split, data_root=data_root,
@@ -222,6 +236,22 @@ class JAXTPCDataset(DefaultDataset):
         if os.path.isdir(mod_dir):
             return mod_dir
         return self._source_data_root
+
+    def _build_joint_index(self):
+        """Build one joint cross-modality event index; inject into all readers.
+
+        Delegates to :func:`pimm_data._joint_index.build_joint_index`. See
+        that module for the desync this prevents (Phase A / D42).
+        """
+        named = [(n, r) for n, r in (
+            ('edep', self.edep_reader), ('sensor', self.sensor_reader),
+            ('hits', self.hits_reader), ('labl', self.labl_reader))
+            if r is not None]
+        self._n_events = build_joint_index(
+            named, strict_lengths=self._strict_lengths,
+            source_label=f"JAXTPCDataset({self._source_data_root!r})",
+            filter_label=(f"min_deposits={self._min_deposits}"
+                          if self._min_deposits > 0 else ''))
 
     def get_data_list(self):
         n = getattr(self, '_n_events', 0)

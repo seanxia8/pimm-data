@@ -15,6 +15,8 @@ import logging
 import numpy as np
 import h5py
 
+from .._shard_meta import read_shard_meta
+
 log = logging.getLogger(__name__)
 
 
@@ -77,36 +79,28 @@ class JAXTPCEdepReader:
 
         for h5_path in self.h5_files:
             try:
-                with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
-                    n_events = int(f['config'].attrs['n_events'])
-                    n_volumes = int(f['config'].attrs.get('n_volumes', 1))
-
-                    if self.min_deposits > 0:
+                if self.min_deposits > 0:
+                    # Per-event deposit counts → own pass over the file.
+                    with h5py.File(h5_path, 'r', libver='latest',
+                                   swmr=True) as f:
+                        n_events = int(f['config'].attrs['n_events'])
+                        n_volumes = int(f['config'].attrs.get('n_volumes', 1))
                         valid = []
                         for i in range(n_events):
                             evt_key = f'event_{i:03d}'
                             if evt_key not in f:
                                 continue
                             evt = f[evt_key]
-                            total = sum(
-                                int(evt[f'volume_{v}'].attrs.get('n_actual', 0))
-                                for v in range(n_volumes)
-                                if f'volume_{v}' in evt
-                            ) if n_volumes > 1 else (
-                                evt['positions'].shape[0] if 'positions' in evt else 0
-                            )
+                            total = self._count_deposits(evt, n_volumes)
                             if total >= self.min_deposits:
                                 valid.append(i)
                         index = np.array(valid, dtype=np.int64)
-                    else:
-                        # Index from event groups actually present, not
-                        # arange(n_events): production may skip an event
-                        # (capacity overflow) leaving a gap — arange would
-                        # KeyError at read time. (The min_deposits>0 branch
-                        # above is already gap-tolerant.)
-                        index = np.array(sorted(
-                            int(k.rsplit('_', 1)[1]) for k in f.keys()
-                            if k.startswith('event_')), dtype=np.int64)
+                else:
+                    # Index from event groups actually present, not
+                    # arange(n_events): production may skip an event
+                    # (capacity overflow) leaving a gap — arange would
+                    # KeyError at read time. (Cached scan — A1.)
+                    index = read_shard_meta(h5_path)['present_events']
 
             except Exception as e:
                 log.warning("Error processing %s: %s", h5_path, e)
@@ -119,6 +113,24 @@ class JAXTPCEdepReader:
         log.info("JAXTPCEdepReader: %d events from %d files (min_deposits=%d)",
                  self.cumulative_lengths[-1], len(self.h5_files),
                  self.min_deposits)
+
+    def _count_deposits(self, evt, n_volumes):
+        """Deposit count used by the ``min_deposits`` filter.
+
+        Volume-aware (A3): when ``self.volume`` is set, count only that
+        volume's deposits — i.e. exactly what ``read_event`` will return —
+        so an event whose deposits all live in *another* volume is excluded
+        rather than kept and then read back empty. With no volume filter the
+        count is the sum over all present volumes (legacy behavior).
+        """
+        if n_volumes > 1:
+            if self.volume is not None:
+                vk = f'volume_{self.volume}'
+                return int(evt[vk].attrs.get('n_actual', 0)) if vk in evt else 0
+            return sum(
+                int(evt[f'volume_{v}'].attrs.get('n_actual', 0))
+                for v in range(n_volumes) if f'volume_{v}' in evt)
+        return evt['positions'].shape[0] if 'positions' in evt else 0
 
     def h5py_worker_init(self):
         """Lazily open file handles (called after DataLoader fork)."""

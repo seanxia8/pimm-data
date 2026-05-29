@@ -7,6 +7,7 @@ events are sharded — the fix for the positional-permutation flaw (SR5/D26).
 import os
 
 import numpy as np
+import h5py
 import pytest
 
 from pimm_data.testing import make_jaxtpc_sample
@@ -123,6 +124,23 @@ def test_n_per_config_holdout(tmp_path):
     assert len(ho_ds) == 8
     assert len(tr) == 32
     assert _identity_set(tr) & _identity_set(ho_ds) == set()
+
+
+def test_min_deposits_filter_through_composition(tmp_path):
+    """Event filtering works via the source_dataset's own min_deposits
+    (joint-aligned by Phase A) — the base wraps the filtered sub-dataset."""
+    root = make_jaxtpc_sample(str(tmp_path), n_events=4, n_volumes=2)
+    # zero event_001's deposits → min_deposits drops it from the sub-dataset.
+    with h5py.File(os.path.join(root, 'edep', 'sim_edep_0000.h5'), 'r+') as f:
+        for vk in [k for k in f['event_001'] if k.startswith('volume_')]:
+            f['event_001'][vk].attrs['n_actual'] = 0
+    src = dict(type='JAXTPCDataset', modalities=('edep',),
+               dataset_name='sim', min_deposits=1)
+    ds = MultiModalEventDataset(src, [dict(root=root, label=0, config_id=0)])
+    assert len(ds) == 3                       # event_001 filtered out
+    # the dropped event is absent from identity too
+    seis = {sei for _, sei in _identity_set(ds)}
+    assert 1 not in seis
 
 
 def test_event_identity_shape(tmp_path):

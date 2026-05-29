@@ -28,6 +28,7 @@ from .collate import collate_fn, point_collate_fn, inseg_collate_fn
 from .jaxtpc import JAXTPCDataset
 from .lucid import LUCiDDataset
 from .pilarnet import PILArNetH5Dataset
+from .multimodal import MultiModalEventDataset
 
 # Detector-specific transforms (register PDGToSemantic)
 from . import detector_transforms  # noqa: F401
@@ -50,6 +51,7 @@ __all__ = [
     "JAXTPCDataset",
     "LUCiDDataset",
     "PILArNetH5Dataset",
+    "MultiModalEventDataset",
     "compute_anchors",
     "ANCHOR_DEFAULT_CFG",
 ]

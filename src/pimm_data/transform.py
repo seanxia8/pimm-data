@@ -35,6 +35,41 @@ except Exception:
     ANCHOR_DEFAULT_CFG = dict()
 
 
+# Generic multi-task label schema (D22/D25): any key named segment_*/
+# instance_*/target_* is a per-point label axis, plus these per-point FK
+# columns. They must survive N-changing transforms (GridSample, dropout, …)
+# rather than being silently dropped or length-mismatched.
+_INDEX_SCHEMA_PREFIXES = ("segment", "instance", "target")
+_INDEX_PER_POINT_KEYS = ("particle_idx", "sensor_idx", "plane_id")
+
+
+def _augment_index_valid_keys(data_dict):
+    """Append present schema/FK keys to ``index_valid_keys`` (D25).
+
+    Underscore-boundary prefix match on ``segment_*``/``instance_*``/
+    ``target_*`` plus the per-point FK columns. A key qualifies only if its
+    leading dim equals the point count — so per-event ``target_*`` (e.g. a
+    length-3 ``target_vertex``) is NOT point-subset.
+    """
+    coord = data_dict.get("coord")
+    if coord is None or not hasattr(coord, "shape"):
+        return
+    n_points = coord.shape[0]
+    valid = data_dict["index_valid_keys"]
+    present = set(valid)
+    for k in list(data_dict.keys()):
+        if k in present or k == "index_valid_keys":
+            continue
+        is_schema = any(k == p or k.startswith(p + "_")
+                        for p in _INDEX_SCHEMA_PREFIXES)
+        if not (is_schema or k in _INDEX_PER_POINT_KEYS):
+            continue
+        v = data_dict[k]
+        if getattr(v, "shape", None) and v.shape[0] == n_points:
+            valid.append(k)
+            present.add(k)
+
+
 def index_operator(data_dict, index, duplicate=False):
     # index selection operator for keys in "index_valid_keys"
     # custom these keys by "Update" transform in config
@@ -69,6 +104,7 @@ def index_operator(data_dict, index, duplicate=False):
             "phi",
             "segment_interaction",
         ]
+    _augment_index_valid_keys(data_dict)
     if not duplicate:
         for key in data_dict["index_valid_keys"]:
             if key in data_dict:
@@ -233,16 +269,20 @@ class NormalizeCoord(object):
 
 @TRANSFORMS.register_module()
 class LogTransform(object):
-    def __init__(self, min_val=1.0e-2, max_val=20.0, log=True, keys=("energy",)):
+    def __init__(self, min_val=1.0e-2, max_val=20.0, log=True, keys=("energy",),
+                 clip=False):
         self.min_val = min_val
         self.max_val = max_val
         self.log = log
+        self.clip = clip
         if not isinstance(keys, tuple):
             keys = (keys,)
         self.keys = keys
 
     def log_transform(self, x):
         """Transform energy to logarithmic scale on [-1,1]"""
+        if self.clip:
+            x = np.clip(x, 0.0, self.max_val)
         # [emin, emax] -> [-1,1]
         y0 = np.log10(self.min_val)
         y1 = np.log10(self.max_val + self.min_val)
@@ -250,6 +290,8 @@ class LogTransform(object):
 
     def linear_transform(self, x):
         """Transform energy to linear scale on [-1,1]"""
+        if self.clip:
+            x = np.clip(x, self.min_val, self.max_val)
         return 2 * (x - self.min_val) / (self.max_val - self.min_val) - 1
 
     def __call__(self, data_dict):
@@ -260,6 +302,52 @@ class LogTransform(object):
                     if self.log
                     else self.linear_transform(data_dict[k])
                 )
+            else:
+                raise ValueError(f"Key {k} not found in data_dict")
+        return data_dict
+
+
+@TRANSFORMS.register_module()
+class RelativeLogNormalize(object):
+    """Per-array log normalization relative to the array minimum.
+
+    Subtracts the per-array min (so the domain is non-negative — handles
+    negative times, the LUCiD case), clips to ``max_val``, applies
+    ``log1p(x/scale)`` normalized to ``[out_min, out_max]``. Value-only
+    (point count unchanged). Non-idempotent / order-sensitive: run before any
+    transform that reorders/subsets the target array.
+    """
+
+    def __init__(self, keys=("time",), scale=50.0, max_val=4000.0,
+                 out_min=-1.0, out_max=1.0):
+        self.scale = float(scale)
+        self.max_val = float(max_val)
+        self.out_min = float(out_min)
+        self.out_max = float(out_max)
+        if self.scale <= 0:
+            raise ValueError("scale must be positive")
+        if self.max_val <= 0:
+            raise ValueError("max_val must be positive")
+        if self.out_max <= self.out_min:
+            raise ValueError("out_max must be greater than out_min")
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        self.keys = keys
+        self.denom = np.log1p(self.max_val / self.scale)
+
+    def relative_log_transform(self, x):
+        x = np.asarray(x, dtype=np.float32)
+        x = x - np.min(x)
+        x = np.clip(x, 0.0, self.max_val)
+        y = np.log1p(x / self.scale) / self.denom
+        y = self.out_min + y * (self.out_max - self.out_min)
+        return np.clip(y, self.out_min, self.out_max).astype(
+            np.float32, copy=False)
+
+    def __call__(self, data_dict):
+        for k in self.keys:
+            if k in data_dict.keys():
+                data_dict[k] = self.relative_log_transform(data_dict[k])
             else:
                 raise ValueError(f"Key {k} not found in data_dict")
         return data_dict
@@ -1089,6 +1177,8 @@ class GridSample(object):
         return_displacement=False,
         project_displacement=False,
         sum_keys=None,
+        min_keys=None,
+        reducers=None,
     ):
         self.grid_size = grid_size
         self.hash = self.fnv_hash_vec if hash_type == "fnv" else self.ravel_hash_vec
@@ -1100,6 +1190,22 @@ class GridSample(object):
         self.return_displacement = return_displacement
         self.project_displacement = project_displacement
         self.sum_keys = sum_keys or []
+        self.min_keys = min_keys or []
+        # Per-key voxel reducer map {key: 'sum'|'min'|'max'|'mean'|'first'}.
+        # Back-compat: sum_keys/min_keys fold in here; an explicit `reducers`
+        # entry wins on conflict.
+        self._reducers = {}
+        for _k in self.sum_keys:
+            self._reducers[_k] = "sum"
+        for _k in self.min_keys:
+            self._reducers[_k] = "min"
+        if reducers:
+            self._reducers.update(reducers)
+        _ops = {"sum", "min", "max", "mean", "first"}
+        bad = {op for op in self._reducers.values() if op not in _ops}
+        if bad:
+            raise ValueError(f"GridSample: unknown reducer op(s) {bad}; "
+                             f"valid: {sorted(_ops)}")
 
     def __call__(self, data_dict):
         assert "coord" in data_dict.keys()
@@ -1127,20 +1233,43 @@ class GridSample(object):
                 mask = np.zeros_like(data_dict["segment"]).astype(bool)
                 mask[data_dict["sampled_index"]] = True
                 data_dict["sampled_index"] = np.where(mask[idx_unique])[0]
-            summed = {}
-            if self.sum_keys:
+            reduced = {}
+            if self._reducers:
                 voxel_of_point = np.empty(len(key), dtype=inverse.dtype)
                 voxel_of_point[idx_sort] = inverse
                 num_voxels = len(count)
-                for sk in self.sum_keys:
-                    if sk in data_dict:
-                        vals = data_dict[sk]
-                        agg = np.zeros((num_voxels,) + vals.shape[1:], dtype=vals.dtype)
+                # First-in-sorted-order representative per voxel — deterministic
+                # (independent of the random survivor picked above).
+                first_sel = np.cumsum(np.insert(count, 0, 0)[:-1])
+                for rk, op in self._reducers.items():
+                    if rk not in data_dict:
+                        continue
+                    vals = data_dict[rk]
+                    shape = (num_voxels,) + vals.shape[1:]
+                    if op == "sum":
+                        agg = np.zeros(shape, dtype=vals.dtype)
                         np.add.at(agg, voxel_of_point, vals)
-                        summed[sk] = agg
+                    elif op == "min":
+                        fill = (np.inf if np.issubdtype(vals.dtype, np.floating)
+                                else np.iinfo(vals.dtype).max)
+                        agg = np.full(shape, fill, dtype=vals.dtype)
+                        np.minimum.at(agg, voxel_of_point, vals)
+                    elif op == "max":
+                        fill = (-np.inf if np.issubdtype(vals.dtype, np.floating)
+                                else np.iinfo(vals.dtype).min)
+                        agg = np.full(shape, fill, dtype=vals.dtype)
+                        np.maximum.at(agg, voxel_of_point, vals)
+                    elif op == "mean":
+                        s = np.zeros(shape, dtype=np.float64)
+                        np.add.at(s, voxel_of_point, vals)
+                        c = count.reshape((-1,) + (1,) * (vals.ndim - 1))
+                        agg = (s / c).astype(vals.dtype)
+                    else:  # "first"
+                        agg = vals[idx_sort[first_sel]]
+                    reduced[rk] = agg
             data_dict = index_operator(data_dict, idx_unique)
-            for sk, agg in summed.items():
-                data_dict[sk] = agg
+            for rk, agg in reduced.items():
+                data_dict[rk] = agg
             if self.return_inverse:
                 data_dict["inverse"] = np.zeros_like(inverse)
                 data_dict["inverse"][idx_sort] = inverse
@@ -1414,7 +1543,10 @@ class MultiViewGenerator(object):
     def get_view(self, point, center, scale, size_override: Optional[int] = None):
         coord = point["coord"]
         max_size = min(self.max_size, coord.shape[0])
+        if max_size <= 0:
+            raise ValueError("Cannot generate a view from an empty point cloud")
         size = int(np.random.uniform(*scale) * max_size) if size_override is None else int(size_override)
+        size = max(1, min(max_size, size))
         index = np.argsort(np.sum(np.square(coord - center), axis=-1))[:size]
         view = dict(index=index)
         for key in point.keys():

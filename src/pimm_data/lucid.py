@@ -49,6 +49,7 @@ import numpy as np
 from .builder import DATASETS
 from .defaults import DefaultDataset
 from ._joint_index import build_joint_index
+from ._label_decorate import decorate_labels
 from .readers.lucid_edep import LUCiDEdepReader
 from .readers.lucid_sensor import LUCiDSensorReader
 from .readers.lucid_hits import LUCiDHitsReader
@@ -98,6 +99,7 @@ class LUCiDDataset(DefaultDataset):
         pe_threshold=0.0,
         pmt_positions=None,
         pmt_positions_file=None,
+        label_config=None,
         transform=None,
         test_mode=False,
         test_cfg=None,
@@ -120,6 +122,7 @@ class LUCiDDataset(DefaultDataset):
 
         self._dataset_name = dataset_name
         self._min_segments = min_segments
+        self._label_config = label_config
         self._max_len = max_len
         self._strict_lengths = strict_lengths
         self._source_data_root = data_root
@@ -288,6 +291,12 @@ class LUCiDDataset(DefaultDataset):
             if category is not None:
                 sub['segment'] = self._lookup_per_particle(
                     particle_idx_arr, category)
+            if self._label_config is not None:
+                decorate_labels(
+                    sub, labl,
+                    lambda name: (particle_idx_arr
+                                  if name == 'particle_idx' else None),
+                    self._label_config)
         return sub
 
     def _build_edep(self, raw, labl):
@@ -307,6 +316,12 @@ class LUCiDDataset(DefaultDataset):
                 if category is not None:
                     sub['segment'] = self._lookup_per_particle(
                         particle_idx, category)
+            if self._label_config is not None:
+                pidx = sub.get('particle_idx')
+                decorate_labels(
+                    sub, labl,
+                    lambda name: (pidx if name == 'particle_idx' else None),
+                    self._label_config)
         return sub
 
     def _build_labl(self, flat):

@@ -196,6 +196,17 @@ def test_jaxtpc_label_config_default_off(tmp_path):
     assert "segment" in edep and "segment_pid" not in edep
 
 
+def test_gather_empty_table_returns_fill_no_crash():
+    """Consolidation: the shared gather guards an empty value table — the JAXTPC
+    inline searchsorted it replaced crashed (clip to len-1 == -1 → IndexError)."""
+    out = gather_with_fill(np.array([3, 7]), np.array([], dtype=np.int32),
+                           keyed_by=np.array([], dtype=np.int32))
+    assert out.tolist() == [-1, -1]
+    # positional empty table too
+    out2 = gather_with_fill(np.array([0, 1]), np.array([], dtype=np.int32))
+    assert out2.tolist() == [-1, -1]
+
+
 def test_gather_bool_and_unsigned_columns():
     """F3: bool/unsigned columns must not crash (uint OverflowError) or
     silently fill True (bool). Real category is uint8, contained is bool."""

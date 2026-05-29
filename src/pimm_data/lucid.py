@@ -49,7 +49,7 @@ import numpy as np
 from .builder import DATASETS
 from .defaults import DefaultDataset
 from ._joint_index import build_joint_index
-from ._label_decorate import decorate_labels
+from ._label_decorate import decorate_labels, gather_with_fill
 from .readers.lucid_edep import LUCiDEdepReader
 from .readers.lucid_sensor import LUCiDSensorReader
 from .readers.lucid_hits import LUCiDHitsReader
@@ -289,8 +289,7 @@ class LUCiDDataset(DefaultDataset):
         if labl is not None:
             category = labl['particle'].get('category')
             if category is not None:
-                sub['segment'] = self._lookup_per_particle(
-                    particle_idx_arr, category)
+                sub['segment'] = gather_with_fill(particle_idx_arr, category)
             if self._label_config is not None:
                 decorate_labels(
                     sub, labl,
@@ -308,14 +307,12 @@ class LUCiDDataset(DefaultDataset):
             track_tbl = labl['track']
             track_particle_idx = track_tbl.get('particle_idx')
             if track_particle_idx is not None:
-                particle_idx = self._lookup_per_track(
-                    track_idx, track_particle_idx)
+                particle_idx = gather_with_fill(track_idx, track_particle_idx)
                 sub['particle_idx'] = particle_idx
                 sub['instance'] = particle_idx
                 category = labl['particle'].get('category')
                 if category is not None:
-                    sub['segment'] = self._lookup_per_particle(
-                        particle_idx, category)
+                    sub['segment'] = gather_with_fill(particle_idx, category)
             if self._label_config is not None:
                 pidx = sub.get('particle_idx')
                 decorate_labels(
@@ -362,28 +359,6 @@ class LUCiDDataset(DefaultDataset):
         except Exception:
             pass
         return None
-
-    @staticmethod
-    def _lookup_per_particle(particle_idx, per_particle_col,
-                             fill=-1):
-        """Gather per-particle values for each row's particle_idx."""
-        n = per_particle_col.shape[0]
-        valid = (particle_idx >= 0) & (particle_idx < n)
-        out = np.full(particle_idx.shape, fill,
-                      dtype=per_particle_col.dtype)
-        if valid.any():
-            out[valid] = per_particle_col[particle_idx[valid]]
-        return out
-
-    @staticmethod
-    def _lookup_per_track(track_idx, per_track_col, fill=-1):
-        """Gather per-track values for each row's track_idx."""
-        n = per_track_col.shape[0]
-        valid = (track_idx >= 0) & (track_idx < n)
-        out = np.full(track_idx.shape, fill, dtype=per_track_col.dtype)
-        if valid.any():
-            out[valid] = per_track_col[track_idx[valid]]
-        return out
 
     def get_data_name(self, idx):
         reader = self._canonical_reader

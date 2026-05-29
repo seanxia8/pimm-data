@@ -47,6 +47,7 @@ import numpy as np
 from .builder import DATASETS
 from .defaults import DefaultDataset
 from ._joint_index import build_joint_index
+from ._label_decorate import gather_with_fill
 from .readers.jaxtpc_edep import JAXTPCEdepReader
 from .readers.jaxtpc_sensor import JAXTPCSensorReader
 from .readers.jaxtpc_labl import JAXTPCLablReader
@@ -561,15 +562,10 @@ class JAXTPCDataset(DefaultDataset):
             instance[mask] = per_dep_tid
 
             if 'track_ids' in vdata and meta_col in vdata:
-                tids = vdata['track_ids']
-                vals = vdata[meta_col]
-                order = np.argsort(tids)
-                s_tids = tids[order]
-                s_vals = vals[order]
-                pos = np.searchsorted(s_tids, per_dep_tid)
-                pos = np.clip(pos, 0, len(s_tids) - 1)
-                matched = s_tids[pos] == per_dep_tid
-                segment[mask] = np.where(matched, s_vals[pos], -1)
+                # value-keyed gather on track_ids (shared primitive; guards
+                # empty track_ids, which the old inline searchsorted crashed on)
+                segment[mask] = gather_with_fill(
+                    per_dep_tid, vdata[meta_col], keyed_by=vdata['track_ids'])
 
         return segment, instance
 
@@ -601,17 +597,11 @@ class JAXTPCDataset(DefaultDataset):
                 all_labels.append(labels)
                 continue
 
+            # group_id → track_id hop, then value-keyed gather on track_ids
             valid = (gid >= 0) & (gid < len(g2t))
             tids = np.where(valid, g2t[gid], -1)
-            labl_tids = vdata['track_ids']
-            labl_vals = vdata[meta_col]
-            order = np.argsort(labl_tids)
-            s_tids = labl_tids[order]
-            s_vals = labl_vals[order]
-            pos = np.searchsorted(s_tids, tids)
-            pos = np.clip(pos, 0, len(s_tids) - 1)
-            matched = s_tids[pos] == tids
-            labels[matched] = s_vals[pos[matched]]
+            labels = gather_with_fill(
+                tids, vdata[meta_col], keyed_by=vdata['track_ids'])
             all_labels.append(labels)
 
         if not all_labels:

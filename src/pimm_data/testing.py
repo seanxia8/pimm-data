@@ -434,8 +434,9 @@ def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
     contained = (rng.random(n_particles) > 0.3).astype(bool)
     # interaction (vertex) each particle belongs to — FK enabling the
     # one-hop instance_interaction axis (particle_idx → interaction_idx).
+    n_interactions = 2
     particle_interaction_idx = rng.integers(
-        0, 2, size=n_particles).astype(np.int32)
+        0, n_interactions, size=n_particles).astype(np.int32)
     # Trivial genealogy: each particle's entry is just its own index.
     genealogy_offsets = np.arange(n_particles + 1, dtype=np.int32)
     genealogy_data = np.arange(n_particles, dtype=np.int32)
@@ -480,6 +481,35 @@ def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
     hits_pe = rng.uniform(0.05, 20.0, size=n_hits_entries).astype(np.float32)
     hits_t = rng.uniform(0.0, 100.0, size=n_hits_entries).astype(np.float32)
 
+    # Per-interaction (per-neutrino-vertex), F5. Dtypes match the v3 writer
+    # (neutrino_pdg int16, source_type uint8, ragged offsets uint32). One
+    # primary per interaction → CSR offsets = arange(n_interactions+1).
+    int_vertex = rng.uniform(-500.0, 500.0,
+                             size=(n_interactions, 3)).astype(np.float32)
+    interaction_table = dict(
+        contained=(rng.random(n_interactions) > 0.3).astype(bool),
+        n_particles=rng.integers(1, n_particles + 1,
+                                 size=n_interactions).astype(np.int32),
+        n_primaries=np.ones(n_interactions, dtype=np.int32),
+        neutrino_energy_MeV=rng.uniform(100.0, 5000.0,
+                                        size=n_interactions).astype(np.float32),
+        neutrino_pdg=rng.choice(np.array([12, 14, -12, -14], dtype=np.int16),
+                                size=n_interactions),
+        source_type=rng.integers(0, 3, size=n_interactions).astype(np.uint8),
+        t0=rng.uniform(-1.0, 1.0, size=n_interactions).astype(np.float32),
+        vertex_x=int_vertex[:, 0], vertex_y=int_vertex[:, 1],
+        vertex_z=int_vertex[:, 2],
+        primary_pdgs_data=rng.choice(_LUCID_PDG_POOL,
+                                     size=n_interactions).astype(np.int16),
+        primary_pdgs_offsets=np.arange(n_interactions + 1, dtype=np.uint32),
+        primary_energies_data=rng.uniform(100.0, 5000.0,
+                                          size=n_interactions).astype(np.float32),
+        primary_energies_offsets=np.arange(n_interactions + 1, dtype=np.uint32),
+        primary_track_ids_data=rng.choice(track_ids,
+                                          size=n_interactions).astype(np.int32),
+        primary_track_ids_offsets=np.arange(n_interactions + 1, dtype=np.uint32),
+    )
+
     return dict(
         edep=dict(
             start=start, end=end, direction=direction, edep=edep,
@@ -507,6 +537,7 @@ def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
             interaction=interaction, initial_energy=initial_energy,
             n_cherenkov=n_cherenkov_track,
             n_particles=n_particles,
+            per_interaction=interaction_table,
         ),
     )
 
@@ -582,6 +613,10 @@ def _write_lucid_labl(path, events):
             pe.create_dataset('t0', data=np.float32(l['t0']))
             pe.create_dataset('contained',
                               data=np.bool_(l['event_contained']))
+
+            pint = g.create_group('per_interaction')
+            for k, arr in l['per_interaction'].items():
+                pint.create_dataset(k, data=arr)
 
             pp = g.create_group('per_particle')
             pp.create_dataset('category', data=l['category'])

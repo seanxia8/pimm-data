@@ -2,22 +2,20 @@
 LUCiDLablReader — per-event labels for LUCiD ``labl/`` HDF5 files
 (``format_version: 3``).
 
-The labl file carries three label scopes:
+The labl file carries four label scopes:
 
 * ``per_event`` — scalar(s) per event (``t0``, ``contained``)
+* ``per_interaction`` — per-neutrino-vertex metadata (``source_type``, ``t0``,
+  ``vertex_{x,y,z}``, ``n_primaries``, ``n_particles``, ``neutrino_pdg``,
+  ``neutrino_energy_MeV``, ``contained``, and CSR-encoded primary
+  ``pdgs``/``energies``/``track_ids``). The ``per_particle.interaction_idx``
+  FK indexes into this table.
 * ``per_particle`` — per-particle-index tables (``category``, ``contained``,
   genealogy CSR)
 * ``per_track`` — per-Geant4-track tables (``track_id``, ``pdg``,
   ``parent_id``, ``ancestor`` [root ancestor ``track_id``],
   ``particle_idx`` [FK into ``per_particle``], ``interaction``,
   ``initial_energy``, ``n_cherenkov``)
-
-LUCiD also writes a fourth scope, ``per_interaction`` (per-neutrino-vertex
-metadata: ``source_type``, ``t0``, ``vertex_{x,y,z}``, ``n_primaries``,
-``n_particles``, ``neutrino_pdg``, ``neutrino_energy_MeV``, ``contained``,
-and CSR-encoded primary ``track_ids``/``pdgs``/``energies``). It is not
-yet surfaced by this reader — exposing it is a deferred change tracked
-against pile-up workflows that need per-vertex grouping.
 
 Derived columns added by the reader (pure reductions, no training
 semantics):
@@ -33,10 +31,21 @@ to ancestor-level with a single lookup:
     data['hits']['instance'] = \
         labl['particle']['ancestor_particle_idx'][data['hits']['particle_idx']]
 
-Output dict (flat; dataset layer rebuilds nested ``{event, particle, track}``):
+Output dict (flat; dataset layer rebuilds nested
+``{event, interaction, particle, track}``):
 
     labl_event_t0                         ()       float32
     labl_event_contained                  ()       bool
+
+    labl_interaction_vertex_{x,y,z}       (I,)     float32
+    labl_interaction_neutrino_energy_MeV  (I,)     float32
+    labl_interaction_neutrino_pdg         (I,)     int32
+    labl_interaction_source_type          (I,)     int32
+    labl_interaction_t0                   (I,)     float32
+    labl_interaction_contained            (I,)     bool
+    labl_interaction_n_{particles,primaries} (I,)  int32
+    labl_interaction_primary_{pdgs,energies,track_ids}_data    (Np,)
+    labl_interaction_primary_{pdgs,energies,track_ids}_offsets (I+1,) int32
 
     labl_particle_category                (P,)     int32
     labl_particle_contained               (P,)     bool
@@ -65,6 +74,8 @@ import logging
 import numpy as np
 import h5py
 
+from .._shard_meta import read_shard_meta
+
 log = logging.getLogger(__name__)
 
 
@@ -78,12 +89,30 @@ _TRACK_KEYS = (
     'interaction', 'initial_energy', 'n_cherenkov',
 )
 _EVENT_KEYS = ('t0', 'contained')
+# per_interaction (per-neutrino-vertex) scope — F5. Scalar-per-interaction
+# physics (vertex, neutrino kinematics, source_type) + ragged primary_* lists
+# (data+offsets, CSR-style like genealogy). interaction_idx in per_particle is
+# the one-hop FK from a point into this table.
+_INTERACTION_KEYS = (
+    'contained', 'n_particles', 'n_primaries',
+    'neutrino_energy_MeV', 'neutrino_pdg', 'source_type', 't0',
+    'vertex_x', 'vertex_y', 'vertex_z',
+    'primary_pdgs_data', 'primary_pdgs_offsets',
+    'primary_energies_data', 'primary_energies_offsets',
+    'primary_track_ids_data', 'primary_track_ids_offsets',
+)
 
 _INT_KEYS = {'category', 'interaction_idx',
              'genealogy_data', 'genealogy_offsets',
              'ext_genealogy_data', 'ext_genealogy_offsets',
              'track_id', 'pdg', 'parent_id', 'particle_idx',
-             'ancestor', 'interaction', 'n_cherenkov'}
+             'ancestor', 'interaction', 'n_cherenkov',
+             # per_interaction integer columns (source_type uint8,
+             # neutrino_pdg int16, offsets uint32 in the v3 writer)
+             'n_particles', 'n_primaries', 'neutrino_pdg', 'source_type',
+             'primary_pdgs_data', 'primary_pdgs_offsets',
+             'primary_energies_offsets',
+             'primary_track_ids_data', 'primary_track_ids_offsets'}
 
 
 class LUCiDLablReader:
@@ -130,9 +159,7 @@ class LUCiDLablReader:
 
         for h5_path in self.h5_files:
             try:
-                with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
-                    n_events = int(f['config'].attrs['n_events'])
-                    index = np.arange(n_events, dtype=np.int64)
+                index = read_shard_meta(h5_path)['present_events']
             except Exception as e:
                 log.warning("Error processing %s: %s", h5_path, e)
                 index = np.array([], dtype=np.int64)
@@ -226,6 +253,12 @@ class LUCiDLablReader:
                 if k in ev:
                     data[f'labl_event_{k}'] = self._cast(
                         np.asarray(ev[k][()]), k)
+
+        pi = evt['per_interaction'] if 'per_interaction' in evt else None
+        if pi is not None:
+            for k in _INTERACTION_KEYS:
+                if k in pi:
+                    data[f'labl_interaction_{k}'] = self._cast(pi[k][:], k)
 
         pp = evt['per_particle'] if 'per_particle' in evt else None
         n_particles = int(evt.attrs.get('n_particles', 0))

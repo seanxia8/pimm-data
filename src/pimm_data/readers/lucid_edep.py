@@ -27,6 +27,8 @@ import logging
 import numpy as np
 import h5py
 
+from .._shard_meta import read_shard_meta
+
 log = logging.getLogger(__name__)
 
 
@@ -81,20 +83,20 @@ class LUCiDEdepReader:
 
         for h5_path in self.h5_files:
             try:
-                with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
-                    n_events = int(f['config'].attrs['n_events'])
-                    if self.min_segments > 0:
+                if self.min_segments > 0:
+                    with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
+                        present = read_shard_meta(h5_path)['present_events']
                         valid = []
-                        for i in range(n_events):
-                            ek = f'event_{i:03d}'
+                        for i in present:
+                            ek = f'event_{int(i):03d}'
                             if ek not in f:
                                 continue
                             n_seg = int(f[ek].attrs.get('n_segments', 0))
                             if n_seg >= self.min_segments:
-                                valid.append(i)
+                                valid.append(int(i))
                         index = np.array(valid, dtype=np.int64)
-                    else:
-                        index = np.arange(n_events, dtype=np.int64)
+                else:
+                    index = read_shard_meta(h5_path)['present_events']
             except Exception as e:
                 log.warning("Error processing %s: %s", h5_path, e)
                 index = np.array([], dtype=np.int64)

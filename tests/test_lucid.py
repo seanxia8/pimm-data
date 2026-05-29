@@ -155,6 +155,49 @@ def test_labl_ancestor_columns_present(lucid_data_root):
     assert primaries_p.size >= 0
 
 
+def test_labl_per_interaction_surfaced(lucid_data_root):
+    """F5: the per_interaction (per-neutrino-vertex) table is surfaced — vertex,
+    neutrino kinematics, source_type, and the ragged primary_* CSR lists — and
+    reaches the nested labl dict as an ``interaction`` table (the scope a
+    ``source=('interaction', col)`` label_config resolves against)."""
+    ds = make_ds(lucid_data_root, modalities=('hits', 'labl'))
+    d = ds.get_data(0)
+    inter = d['labl']['interaction']
+    # scalar-per-interaction physics present
+    for k in ('vertex_x', 'vertex_y', 'vertex_z', 'neutrino_energy_MeV',
+              'neutrino_pdg', 'source_type', 't0', 'contained', 'n_primaries'):
+        assert k in inter, k
+    n_int = inter['vertex_x'].shape[0]
+    assert n_int >= 1
+    # the per_particle one-hop FK indexes into this table
+    pii = d['labl']['particle']['interaction_idx']
+    assert int(pii.max()) < n_int
+    # ragged primary_* are CSR (offsets length n_int+1, monotone)
+    off = inter['primary_pdgs_offsets']
+    assert off.shape == (n_int + 1,)
+    assert (np.diff(off) >= 0).all() and int(off[0]) == 0
+    assert inter['primary_pdgs_data'].shape[0] == int(off[-1])
+    # integer columns are not silently floated by _cast
+    assert np.issubdtype(inter['neutrino_pdg'].dtype, np.integer)
+    assert np.issubdtype(inter['source_type'].dtype, np.integer)
+    # contained stays bool
+    assert inter['contained'].dtype == np.bool_
+
+
+def test_label_config_interaction_event_broadcast(lucid_data_root):
+    """F5 end-to-end: a ('interaction', col) event_broadcast axis tiles the
+    per-interaction vector onto every point via the shared decorate_labels."""
+    cfg = [dict(out='target_vertex_x', scope='event_broadcast',
+                source=('interaction', 'vertex_x'))]
+    ds = make_ds(lucid_data_root, modalities=('hits', 'labl'),
+                 label_config=cfg)
+    d = ds.get_data(0)
+    hits = d['hits']
+    assert 'target_vertex_x' in hits
+    n = hits['coord'].shape[0]
+    assert hits['target_vertex_x'].shape[0] == n
+
+
 def test_ancestor_remap_one_liner(lucid_data_root):
     """The documented ancestor remap should be a single lookup."""
     ds = make_ds(lucid_data_root,

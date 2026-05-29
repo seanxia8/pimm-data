@@ -129,6 +129,7 @@ class JAXTPCDataset(DefaultDataset):
         self._volume = volume
         self._label_key = label_key
         self._label_config = label_config
+        self._validate_label_config()
         self._min_deposits = min_deposits
         self._include_physics = include_physics
         self._label_keys = label_keys
@@ -315,7 +316,10 @@ class JAXTPCDataset(DefaultDataset):
                 sub['volume_id'], labl_by_volume)
             sub['segment'] = segment
             sub['instance'] = instance
-            for out, lk in self._track_axes():
+            for out, kind, lk in self._track_axes():
+                if kind == 'self':
+                    sub[out] = instance[:, None]   # the per-deposit track id
+                    continue
                 seg_axis, _ = self._decorate_edep_from_labl(
                     sub['volume_id'], labl_by_volume, label_key=lk)
                 sub[out] = seg_axis[:, None]
@@ -357,7 +361,10 @@ class JAXTPCDataset(DefaultDataset):
         if labl_by_volume:
             sub['segment'] = self._decorate_hits_from_labl(
                 planes, raw, hits_raw, labl_by_volume)
-            for out, lk in self._track_axes():
+            for out, kind, lk in self._track_axes():
+                if kind == 'self':
+                    sub[out] = instance[:, None]   # bare instance (group_id)
+                    continue
                 sub[out] = self._decorate_hits_from_labl(
                     planes, raw, hits_raw, labl_by_volume,
                     label_key=lk)[:, None]
@@ -453,21 +460,65 @@ class JAXTPCDataset(DefaultDataset):
 
         return planes, coord, energy, plane_id, raw_nested
 
+    def _validate_label_config(self):
+        """Reject ``label_config`` specs the JAXTPC path can't honor (F4).
+
+        JAXTPC labl is per-volume ``track`` tables value-keyed by ``track_ids``
+        — there is no event-level or ``particle`` table as in LUCiD. So a spec
+        that LUCiD's shared ``decorate_labels`` would satisfy (event scope,
+        ``('particle'/'event', col)`` source) has no JAXTPC analog. Raise here
+        rather than silently dropping the axis, so the same ``label_config``
+        either produces the named key on both detectors or fails loud — never
+        diverges quietly. Supported: ``scope='point'`` with ``source='self'``
+        (emit the per-point track id) or ``source=('track', col)`` (value-keyed
+        gather of ``track_<col>``)."""
+        if not self._label_config:
+            return
+        for spec in self._label_config:
+            out = spec.get('out', '?')
+            scope = spec.get('scope', 'point')
+            if scope != 'point':
+                raise ValueError(
+                    f"JAXTPCDataset label_config[{out!r}]: scope={scope!r} "
+                    "unsupported (no event-level labl table); use scope='point'.")
+            src = spec.get('source', 'self')
+            ok = (src == 'self'
+                  or (isinstance(src, (tuple, list)) and len(src) == 2
+                      and src[0] == 'track'))
+            if not ok:
+                raise ValueError(
+                    f"JAXTPCDataset label_config[{out!r}]: source={src!r} "
+                    "unsupported; use 'self' or ('track', <column>). "
+                    "(LUCiD's ('particle'/'event', …) tables have no JAXTPC "
+                    "analog — this would silently drop the axis.)")
+            kb = spec.get('keyed_by')
+            if kb is not None and kb != 'track_ids':
+                raise ValueError(
+                    f"JAXTPCDataset label_config[{out!r}]: keyed_by={kb!r} "
+                    "unsupported; JAXTPC track columns are keyed by 'track_ids'.")
+
     def _track_axes(self):
-        """(out_key, track_column) for each point-scope ``label_config`` axis
-        sourced from a ``('track', col)`` column — drives the value-keyed
-        per-volume gather to emit named schema keys (e.g. ``segment_pid`` from
-        ``track_pdg``, ``instance_interaction`` from ``track_interaction``)."""
+        """``(out_key, kind, column)`` for each point-scope ``label_config`` axis.
+
+        ``kind='self'`` → emit the bare per-modality ``instance`` axis under the
+        named key (parity with LUCiD ``source='self'``, where ``self`` == the
+        ``instance`` identifier); ``kind='track'`` → value-keyed
+        per-volume gather of ``track_<column>`` to emit named schema keys (e.g.
+        ``segment_pid`` from ``track_pdg``). Validated by
+        :meth:`_validate_label_config`, so unsupported specs raise at
+        construction and are never silently dropped here."""
         if not self._label_config:
             return []
         axes = []
         for spec in self._label_config:
             if spec.get('scope', 'point') != 'point':
                 continue
-            src = spec.get('source')
-            if (isinstance(src, (tuple, list)) and len(src) == 2
+            src = spec.get('source', 'self')
+            if src == 'self':
+                axes.append((spec['out'], 'self', None))
+            elif (isinstance(src, (tuple, list)) and len(src) == 2
                     and src[0] == 'track'):
-                axes.append((spec['out'], src[1]))
+                axes.append((spec['out'], 'track', src[1]))
         return axes
 
     def _decorate_edep_from_labl(self, volume_id, labl_by_volume,

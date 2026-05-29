@@ -350,6 +350,15 @@ class RelativeLogNormalize(object):
     ``log1p(x/scale)`` normalized to ``[out_min, out_max]``. Value-only
     (point count unchanged). Non-idempotent / order-sensitive: run before any
     transform that reorders/subsets the target array.
+
+    **Deliberate ceiling (D13).** ``max_val`` is a *hard* clip: every value
+    with ``x - min(x) >= max_val`` saturates to ``out_max`` and becomes
+    indistinguishable. The default ``4000`` is a model choice for the PMT
+    hit-time axis — the late-time tail (reflections, scattered / afterpulse
+    light) is intentionally compressed into the top bin rather than dilating
+    the informative early-time dynamic range. This is lossy by design: if a
+    downstream task needs to resolve the long tail, raise ``max_val`` (and
+    re-tune ``scale``) rather than assuming the tail survived.
     """
 
     def __init__(self, keys=("time",), scale=50.0, max_val=4000.0,

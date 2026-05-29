@@ -7,9 +7,10 @@ sensor/hits/labl. ``build_joint_index`` intersects the present events across
 modalities and injects one shared index, keeping all modalities on the same
 physics event for every idx.
 
-(Unlike JAXTPC, the LUCiD readers index ``arange(n_events)`` — they are not
-gap-tolerant — so the LUCiD desync source is ``min_segments``, not a missing
-``event_NNN``.)
+The LUCiD readers index ``read_shard_meta(...)['present_events']`` (F6), so —
+like JAXTPC — a missing ``event_NNN`` is skipped per modality and the joint
+index intersects what each modality actually has. ``min_segments`` is the
+other desync source (it masks the edep index only).
 """
 import os
 
@@ -63,6 +64,28 @@ def test_min_segments_desync_realigns(tmp_path):
     assert len(ds) == 2
     for r in _readers(ds):
         assert r.indices[0].tolist() == [0, 2]
+    _assert_aligned(ds)
+    for idx in range(len(ds)):
+        ds.get_data(idx)
+
+
+def test_missing_event_group_gap_tolerant(tmp_path):
+    """F6: a deleted ``event_NNN`` in one modality is skipped (not crashed on),
+    and the joint index drops it everywhere so modalities stay aligned.
+
+    Pre-F6 the readers used ``arange(n_events)`` from the (unchanged) config
+    attr, so a punched gap meant opening a missing group + off-by-one misalign
+    against every other modality. ``present_events`` makes the skip intrinsic.
+    """
+    root = make_lucid_sample(str(tmp_path), n_events=4)
+    # Punch an interior gap in hits only (config n_events still says 4).
+    with h5py.File(os.path.join(root, 'hits', 'wc_hits_0000.h5'), 'r+') as f:
+        del f['event_002']
+
+    ds = LUCiDDataset(data_root=root, split='', modalities=_ALL)
+    assert len(ds) == 3                              # 002 gone, not crashed
+    for r in _readers(ds):
+        assert r.indices[0].tolist() == [0, 1, 3]    # gap-tolerant + intersected
     _assert_aligned(ds)
     for idx in range(len(ds)):
         ds.get_data(idx)

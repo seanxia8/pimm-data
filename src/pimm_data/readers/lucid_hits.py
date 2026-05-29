@@ -21,6 +21,8 @@ import logging
 import numpy as np
 import h5py
 
+from .._shard_meta import read_shard_meta
+
 log = logging.getLogger(__name__)
 
 
@@ -72,9 +74,7 @@ class LUCiDHitsReader:
 
         for h5_path in self.h5_files:
             try:
-                with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
-                    n_events = int(f['config'].attrs['n_events'])
-                    index = np.arange(n_events, dtype=np.int64)
+                index = read_shard_meta(h5_path)['present_events']
             except Exception as e:
                 log.warning("Error processing %s: %s", h5_path, e)
                 index = np.array([], dtype=np.int64)

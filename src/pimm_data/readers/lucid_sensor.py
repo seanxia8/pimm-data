@@ -22,6 +22,8 @@ import logging
 import numpy as np
 import h5py
 
+from .._shard_meta import read_shard_meta
+
 log = logging.getLogger(__name__)
 
 
@@ -83,12 +85,10 @@ class LUCiDSensorReader:
 
         for h5_path in self.h5_files:
             try:
-                with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
-                    cfg = f['config']
-                    n_events = int(cfg.attrs['n_events'])
-                    if self._n_sensors is None:
-                        self._n_sensors = int(cfg.attrs.get('n_sensors', 0))
-                    index = np.arange(n_events, dtype=np.int64)
+                meta = read_shard_meta(h5_path)
+                if self._n_sensors is None:
+                    self._n_sensors = int(meta['config_attrs'].get('n_sensors', 0))
+                index = meta['present_events']
             except Exception as e:
                 log.warning("Error processing %s: %s", h5_path, e)
                 index = np.array([], dtype=np.int64)

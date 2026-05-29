@@ -143,6 +143,49 @@ def test_jaxtpc_label_config_named_keys(tmp_path):
     assert edep["segment_pid"][:, 0].tolist() == edep["segment"].tolist()
 
 
+def test_jaxtpc_label_config_self_source(tmp_path):
+    """F4: source='self' is honored on JAXTPC too (parity with LUCiD) — it
+    emits the per-point resolved track id, == the bare 'instance' axis."""
+    from pimm_data.jaxtpc import JAXTPCDataset
+    from pimm_data.testing import make_jaxtpc_sample
+    root = make_jaxtpc_sample(str(tmp_path), n_events=2, n_volumes=2)
+    cfg = [dict(out="instance_particle", scope="point", source="self")]
+    ds = JAXTPCDataset(data_root=root, split="",
+                       modalities=("edep", "hits", "labl"),
+                       dataset_name="sim", label_config=cfg)
+    sample = ds.get_data(0)
+    for stream in ("edep", "hits"):
+        s = sample[stream]
+        assert "instance_particle" in s                 # not silently dropped
+        assert s["instance_particle"].shape == (s["coord"].shape[0], 1)
+        # 'self' is the resolved track id == the bare instance axis
+        assert s["instance_particle"][:, 0].tolist() == \
+            np.asarray(s["instance"]).ravel().tolist()
+
+
+def test_jaxtpc_label_config_rejects_unsupported_specs(tmp_path):
+    """F4: specs with no JAXTPC analog raise at construction instead of being
+    silently dropped (the LUCiD/JAXTPC contract-divergence bug)."""
+    from pimm_data.jaxtpc import JAXTPCDataset
+    from pimm_data.testing import make_jaxtpc_sample
+    root = make_jaxtpc_sample(str(tmp_path), n_events=2)
+    kw = dict(data_root=root, split="", modalities=("edep", "labl"),
+              dataset_name="sim")
+    # event scope — no event-level labl table on JAXTPC
+    with pytest.raises(ValueError, match="scope"):
+        JAXTPCDataset(label_config=[dict(out="t", scope="event_broadcast",
+                                         source=("event", "x"))], **kw)
+    # ('particle', col) — LUCiD-only table
+    with pytest.raises(ValueError, match="source"):
+        JAXTPCDataset(label_config=[dict(out="t", scope="point",
+                                         source=("particle", "category"))], **kw)
+    # keyed_by other than track_ids
+    with pytest.raises(ValueError, match="keyed_by"):
+        JAXTPCDataset(label_config=[dict(out="t", scope="point",
+                                         source=("track", "pdg"),
+                                         keyed_by="group_id")], **kw)
+
+
 def test_jaxtpc_label_config_default_off(tmp_path):
     from pimm_data.jaxtpc import JAXTPCDataset
     from pimm_data.testing import make_jaxtpc_sample

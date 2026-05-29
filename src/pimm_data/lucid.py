@@ -325,11 +325,15 @@ class LUCiDDataset(DefaultDataset):
         return sub
 
     def _build_labl(self, flat):
-        """Rebuild nested ``{event, particle, track}`` dict from flat keys."""
-        out = {'event': {}, 'particle': {}, 'track': {}}
+        """Rebuild nested ``{event, interaction, particle, track}`` dict from
+        flat keys (the tables ``decorate_labels`` resolves ``source`` against).
+        """
+        out = {'event': {}, 'interaction': {}, 'particle': {}, 'track': {}}
         for k, v in flat.items():
             if k.startswith('labl_event_'):
                 out['event'][k[len('labl_event_'):]] = v
+            elif k.startswith('labl_interaction_'):
+                out['interaction'][k[len('labl_interaction_'):]] = v
             elif k.startswith('labl_particle_'):
                 out['particle'][k[len('labl_particle_'):]] = v
             elif k.startswith('labl_track_'):

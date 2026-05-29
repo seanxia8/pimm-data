@@ -42,6 +42,37 @@ import h5py
 import numpy as np
 
 
+def _stamp_source_event_idx(outdir, dataset_name, modalities, n_files,
+                            n_events, start=0):
+    """Add a stable per-event identity to written fixtures.
+
+    Stamps both a per-file ``config/source_event_idx`` vector (the O(1)/file
+    identity path) and a per-event ``source_event_idx`` attr, matching what
+    the production writers emit. The global id is contiguous across files so
+    the same physics event shares one id across all modalities — the key the
+    holdout/identity layer (D26/D27) relies on.
+    """
+    for file_idx in range(n_files):
+        sei = (np.arange(n_events, dtype=np.uint32)
+               + start + file_idx * n_events)
+        for mod in modalities:
+            path = os.path.join(
+                outdir, mod, f'{dataset_name}_{mod}_{file_idx:04d}.h5')
+            if not os.path.exists(path):
+                continue
+            with h5py.File(path, 'r+') as f:
+                cfg = f['config']
+                if 'source_event_idx' in cfg:
+                    del cfg['source_event_idx']
+                cfg.create_dataset('source_event_idx', data=sei)
+                for k in f.keys():
+                    if not k.startswith('event_'):
+                        continue
+                    i = int(k.rsplit('_', 1)[1])
+                    if 0 <= i < n_events:
+                        f[k].attrs['source_event_idx'] = int(sei[i])
+
+
 # ---------------------------------------------------------------------------
 # JAXTPC
 # ---------------------------------------------------------------------------
@@ -54,7 +85,8 @@ _JAXTPC_POS_ORIGIN = (-2160.0, -2160.0, -2160.0)
 
 def make_jaxtpc_sample(outdir, dataset_name='sim', n_events=2, n_files=1,
                        n_volumes=2, n_deposits=60, n_groups=6, n_tracks=6,
-                       n_pixels_per_plane=40, readout_type='wire', seed=0):
+                       n_pixels_per_plane=40, readout_type='wire', seed=0,
+                       stamp_source_event_idx=True):
     """Write a minimal schema-conformant JAXTPC v3 dataset.
 
     Creates ``{outdir}/{edep,sensor,hits,labl}/{dataset_name}_{mod}_NNNN.h5``.
@@ -87,6 +119,10 @@ def make_jaxtpc_sample(outdir, dataset_name='sim', n_events=2, n_files=1,
         _write_jaxtpc_labl(os.path.join(outdir, 'labl',
                                         tag.format(mod='labl')), events)
 
+    if stamp_source_event_idx:
+        _stamp_source_event_idx(outdir, dataset_name,
+                                ('edep', 'sensor', 'hits', 'labl'),
+                                n_files, n_events)
     return outdir
 
 
@@ -332,7 +368,8 @@ _LUCID_PDG_POOL = np.array([11, 13, 22, 211, -11], dtype=np.int32)
 
 def make_lucid_sample(outdir, dataset_name='wc', n_events=2, n_files=1,
                       n_segments=80, n_hits=120, n_hits_entries=200,
-                      n_sensors=64, n_tracks=8, n_particles=3, seed=0):
+                      n_sensors=64, n_tracks=8, n_particles=3, seed=0,
+                      stamp_source_event_idx=True):
     """Write a minimal schema-conformant LUCiD v3 dataset.
 
     Creates ``{outdir}/{edep,sensor,hits,labl}/{dataset_name}_{mod}_NNNN.h5``.
@@ -364,6 +401,10 @@ def make_lucid_sample(outdir, dataset_name='wc', n_events=2, n_files=1,
         _write_lucid_labl(os.path.join(outdir, 'labl',
                                        tag.format(mod='labl')), events)
 
+    if stamp_source_event_idx:
+        _stamp_source_event_idx(outdir, dataset_name,
+                                ('edep', 'sensor', 'hits', 'labl'),
+                                n_files, n_events)
     return outdir
 
 

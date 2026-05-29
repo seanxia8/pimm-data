@@ -34,14 +34,22 @@ def read_shard_meta(path):
     if hit is not None:
         return hit
     with h5py.File(path, 'r', libver='latest', swmr=True) as f:
-        config_attrs = dict(f['config'].attrs) if 'config' in f else {}
+        cfg = f['config'] if 'config' in f else None
+        config_attrs = dict(cfg.attrs) if cfg is not None else {}
         present = np.array(sorted(
             int(k.rsplit('_', 1)[1]) for k in f.keys()
             if k.startswith('event_')), dtype=np.int64)
+        # Per-file stable-identity vector (O(1)/file), if the writer stamped
+        # it; indexable by event number. Falls back to None (the dataset then
+        # uses the per-event attr or positional identity — D26).
+        sei_vec = None
+        if cfg is not None and 'source_event_idx' in cfg:
+            sei_vec = cfg['source_event_idx'][()].astype(np.int64)
     meta = {
         'n_events': int(config_attrs.get('n_events', len(present))),
         'present_events': present,
         'config_attrs': config_attrs,
+        'source_event_idx': sei_vec,
     }
     _CACHE[key] = meta
     return meta

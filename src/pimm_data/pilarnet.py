@@ -42,11 +42,12 @@ class PILArNetH5Dataset(Dataset):
     - 4: Proton
     - 5: None (Low energy deposit)
 
-    PID, momentum, and vertex information is only available in v2.
+    PID, momentum, and vertex information is only available in v2/v3.
     v1 is the original PILArNet dataset in the PoLAr-MAE paper; v2 is the reprocessed PILArNet-M dataset
-    which contains PID, momentum, and vertex information, and is used in the Panda paper. Note that
-    the events in the splits are different between v1 and v2, so care needs to be taken when evaluating a model
-    that was trained on v1 on v2.
+    which contains PID, momentum, and vertex information, and is used in the Panda paper. v3 adds a
+    per-cluster ``is_primary`` flag (6-wide ``cluster_extra``, column 5) emitted as a per-point
+    ``is_primary`` key. Note that the events in the splits are different between v1 and v2, so care
+    needs to be taken when evaluating a model that was trained on v1 on v2.
 
     Event Overlay:
         Set overlay_n_events > 1 to overlay multiple events into a single point cloud.
@@ -68,7 +69,7 @@ class PILArNetH5Dataset(Dataset):
         max_len=-1,
         remove_low_energy_scatters=False,
         old_pid_mapping=False,
-        revision: Literal["v1", "v2"] = "v2",
+        revision: Literal["v1", "v2", "v3"] = "v2",
         # event overlay parameters
         overlay_n_events=1,
         overlay_prob=1.0,
@@ -234,7 +235,7 @@ class PILArNetH5Dataset(Dataset):
             vtx_x = np.zeros_like(semantic_id, dtype=np.float32)
             vtx_y = np.zeros_like(semantic_id, dtype=np.float32)
             vtx_z = np.zeros_like(semantic_id, dtype=np.float32)
-        else:  # v2
+        elif self.revision == "v2":
             cluster_size, group_id, interaction_id, semantic_id, pid = (
                 h5_file["cluster"][file_idx].reshape(-1, 6)[:, [0, 2, -3, -2, -1]].T
             )
@@ -242,6 +243,29 @@ class PILArNetH5Dataset(Dataset):
             pid[pid == -1] = (
                 5 if not self.old_pid_mapping else 6
             )  # -1 (LED) --> 5 (where Kaon is) or 6 (new ID)
+        elif self.revision == "v3":
+            # v3: same cluster layout as v2, but cluster_extra is 6-wide with a
+            # per-cluster is_primary flag in column 5.
+            cluster_size, group_id, interaction_id, semantic_id, pid = (
+                h5_file["cluster"][file_idx].reshape(-1, 6)[:, [0, 2, -3, -2, -1]].T
+            )
+            n_clusters = cluster_size.shape[0]
+            raw_extra = h5_file["cluster_extra"][file_idx]
+            cluster_extra = (
+                raw_extra.reshape(n_clusters, -1)
+                if n_clusters > 0
+                else np.empty((0, 6), dtype=np.float32)
+            )
+            if cluster_extra.shape[1] != 6:
+                raise ValueError(
+                    f"Expected v3 cluster_extra width 6, got {cluster_extra.shape[1]}"
+                )
+            mom, vtx_x, vtx_y, vtx_z, is_primary = cluster_extra[:, [1, 2, 3, 4, 5]].T
+            pid[pid == -1] = (
+                5 if not self.old_pid_mapping else 6
+            )
+        else:
+            raise ValueError(f"Unsupported PILArNet revision: {self.revision}")
 
         # Remove low energy scatters if configured
         if self.remove_low_energy_scatters:
@@ -254,6 +278,8 @@ class PILArNetH5Dataset(Dataset):
                 cluster_size[1:],
             )
             mom, vtx_x, vtx_y, vtx_z = mom[1:], vtx_x[1:], vtx_y[1:], vtx_z[1:]
+            if self.revision == "v3":
+                is_primary = is_primary[1:]
 
         # Compute semantic ids for each point
         data_semantic_id = np.repeat(semantic_id, cluster_size)
@@ -264,7 +290,9 @@ class PILArNetH5Dataset(Dataset):
         data_vtx_x = np.repeat(vtx_x, cluster_size)
         data_vtx_y = np.repeat(vtx_y, cluster_size)
         data_vtx_z = np.repeat(vtx_z, cluster_size)
-        
+        if self.revision == "v3":
+            data_is_primary = np.repeat(is_primary, cluster_size)
+
         # Apply energy threshold if needed
         if self.energy_threshold > 0:
             threshold_mask = data[:, 3] > self.energy_threshold
@@ -277,6 +305,8 @@ class PILArNetH5Dataset(Dataset):
             data_vtx_x = data_vtx_x[threshold_mask]
             data_vtx_y = data_vtx_y[threshold_mask]
             data_vtx_z = data_vtx_z[threshold_mask]
+            if self.revision == "v3":
+                data_is_primary = data_is_primary[threshold_mask]
 
         # Prepare return dictionary
         data_dict = {}
@@ -308,6 +338,8 @@ class PILArNetH5Dataset(Dataset):
         data_dict["segment_interaction"] = (interaction_ids[:, None] != -1).astype(
                 np.int32
             )  # 1 if not background, 0 if background
+        if self.revision == "v3":
+            data_dict["is_primary"] = data_is_primary.astype(np.int32)[:, None]
 
         # add metadata
         h5_name = os.path.basename(self.h5_files[h5_idx])
@@ -352,13 +384,19 @@ class PILArNetH5Dataset(Dataset):
         else:  # z
             return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float32)
 
-    def _apply_random_90_rotation(self, coord, center=None):
-        """Apply random 90-degree rotations around x, y, z axes centered at given point."""
+    def _apply_random_90_rotation(self, coord, center=None, rotations=None):
+        """Apply random 90-degree rotations around x, y, z axes centered at given point.
+
+        ``rotations`` (a ``{axis: n_rot}`` dict) lets the caller draw once and
+        apply the SAME rotation to both ``coord`` and the v3 ``vertex``;
+        ``rotations=None`` draws internally (v1/v2 byte-unchanged)."""
         if center is None:
             center = np.array([384.0, 384.0, 384.0], dtype=np.float32)
+        if rotations is None:
+            rotations = {axis: random.randint(0, 3) for axis in ("x", "y", "z")}
         coord = coord - center
         for axis in ["x", "y", "z"]:
-            n_rot = random.randint(0, 3)
+            n_rot = rotations[axis]
             if n_rot > 0:
                 rot_mat = self._get_rotation_matrix_90(axis, n_rot)
                 coord = coord @ rot_mat.T
@@ -431,6 +469,8 @@ class PILArNetH5Dataset(Dataset):
             "instance_particle", "instance_interaction",
             "momentum", "vertex", "segment_interaction",
         ]
+        if self.revision == "v3":
+            concat_keys.append("is_primary")
         instance_keys = ("instance_particle", "instance_interaction")
 
         dataset_len = len(self)
@@ -472,9 +512,20 @@ class PILArNetH5Dataset(Dataset):
 
             # apply random 90-degree rotation around detector center
             if "coord" in extra:
-                # rotation center is the detector volume center
+                # rotation center is the detector volume center; draw the
+                # rotation ONCE so coord and the v3 vertex share orientation.
                 detector_center = np.array([384.0, 384.0, 384.0], dtype=np.float32)
-                extra["coord"] = self._apply_random_90_rotation(extra["coord"], center=detector_center)
+                rotations = {axis: random.randint(0, 3) for axis in ("x", "y", "z")}
+                extra["coord"] = self._apply_random_90_rotation(
+                    extra["coord"], center=detector_center, rotations=rotations
+                )
+                if self.revision == "v3" and "vertex" in extra:
+                    valid_vertex = ~(extra["vertex"] == -1).all(axis=1)
+                    extra["vertex"][valid_vertex] = self._apply_random_90_rotation(
+                        extra["vertex"][valid_vertex],
+                        center=detector_center,
+                        rotations=rotations,
+                    )
 
             # concatenate arrays
             for key in concat_keys:

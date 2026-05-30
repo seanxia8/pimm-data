@@ -352,12 +352,12 @@ class LUCiDDataset(DefaultDataset):
             return None
         if not reader._initted:
             reader.h5py_worker_init()
-        try:
-            cfg = reader._h5data[0]['config']
-            if 'sensor_positions' in cfg:
-                return cfg['sensor_positions'][:].astype(np.float32)
-        except Exception:
-            pass
+        # First shard that actually opened — shard 0 may be a skipped dangling
+        # shard (F17); PMT geometry is shared across shards.
+        f0 = next((h for h in reader._h5data if h is not None), None)
+        if f0 is not None and 'config' in f0 \
+                and 'sensor_positions' in f0['config']:
+            return f0['config']['sensor_positions'][:].astype(np.float32)
         return None
 
     def get_data_name(self, idx):

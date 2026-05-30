@@ -27,42 +27,9 @@ from pimm_data.jaxtpc import JAXTPCDataset
 from pimm_data.readers.jaxtpc_edep import JAXTPCEdepReader
 from pimm_data.readers.jaxtpc_sensor import JAXTPCSensorReader
 
+from _joint_index_helpers import readers as _readers, assert_aligned as _assert_aligned
+
 _ALL = ('edep', 'sensor', 'hits', 'labl')
-
-
-def _readers(ds):
-    return [r for r in (ds.edep_reader, ds.sensor_reader,
-                        ds.hits_reader, ds.labl_reader) if r is not None]
-
-
-def _event_key_per_idx(ds):
-    """For each global idx, the event_key each reader resolves to.
-
-    Returns a list (one entry per idx) of the *set* of event_keys across
-    modalities. Alignment ⇒ every set has size 1.
-    """
-    readers = _readers(ds)
-    for r in readers:
-        if not r._initted:
-            r.h5py_worker_init()
-    out = []
-    for idx in range(len(ds)):
-        # _locate_event returns (f, event_key) or (f, event_key, n_volumes);
-        # event_key is element 1 in both.
-        out.append({r._locate_event(idx)[1] for r in readers})
-    return out
-
-
-def _assert_aligned(ds):
-    """All readers share the identical joint index and resolve idx→same event."""
-    readers = _readers(ds)
-    ref_idx = [a.tolist() for a in readers[0].indices]
-    ref_cum = readers[0].cumulative_lengths.tolist()
-    for r in readers[1:]:
-        assert [a.tolist() for a in r.indices] == ref_idx
-        assert r.cumulative_lengths.tolist() == ref_cum
-    for keys in _event_key_per_idx(ds):
-        assert len(keys) == 1, f"modalities disagree on the event: {keys}"
 
 
 # ---------------------------------------------------------------------------

@@ -39,6 +39,7 @@ via ``dict(type="JAXTPCDataset", ...)``.
 """
 
 import os
+import re
 import logging
 from copy import deepcopy
 
@@ -378,19 +379,15 @@ class JAXTPCDataset(DefaultDataset):
         return ('wire', 'time')
 
     def _build_labl(self, labl_flat):
-        """Convert flat labl_v{N}_col keys into nested {v{N}: {col: arr}}."""
+        """Convert flat labl_v{N}_col keys into nested {v{N}: {col: arr}}.
+
+        Key format ``labl_v{idx}_{col}``; ``col`` may contain underscores, so
+        the greedy ``(.+)`` captures it whole."""
         by_volume = {}
         for k, v in labl_flat.items():
-            # Key format: labl_v{idx}_{col}; col may contain underscores
-            assert k.startswith('labl_v'), k
-            rest = k[len('labl_v'):]
-            # Split on first underscore after idx
-            idx_end = 0
-            while idx_end < len(rest) and rest[idx_end].isdigit():
-                idx_end += 1
-            vid = 'v' + rest[:idx_end]
-            col = rest[idx_end + 1:]  # skip the separator underscore
-            by_volume.setdefault(vid, {})[col] = v
+            m = re.match(r'labl_(v\d+)_(.+)', k)
+            assert m is not None, k
+            by_volume.setdefault(m.group(1), {})[m.group(2)] = v
         return by_volume
 
     def _build_bridges(self, hits_raw):

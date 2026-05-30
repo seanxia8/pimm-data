@@ -20,27 +20,9 @@ import pytest
 from pimm_data.testing import make_lucid_sample
 from pimm_data.lucid import LUCiDDataset
 
+from _joint_index_helpers import readers as _readers, assert_aligned as _assert_aligned
+
 _ALL = ('edep', 'sensor', 'hits', 'labl')
-
-
-def _readers(ds):
-    return [r for r in (ds.edep_reader, ds.sensor_reader,
-                        ds.hits_reader, ds.labl_reader) if r is not None]
-
-
-def _assert_aligned(ds):
-    readers = _readers(ds)
-    ref_idx = [a.tolist() for a in readers[0].indices]
-    ref_cum = readers[0].cumulative_lengths.tolist()
-    for r in readers[1:]:
-        assert [a.tolist() for a in r.indices] == ref_idx
-        assert r.cumulative_lengths.tolist() == ref_cum
-    for r in readers:
-        if not r._initted:
-            r.h5py_worker_init()
-    for idx in range(len(ds)):
-        keys = {r._locate_event(idx)[1] for r in readers}
-        assert len(keys) == 1, f"idx {idx}: modalities disagree {keys}"
 
 
 def test_no_filter_all_modalities_aligned(tmp_path):

@@ -84,17 +84,16 @@ class LUCiDEdepReader:
         for h5_path in self.h5_files:
             try:
                 if self.min_segments > 0:
+                    # One open: iterate the present event groups directly and
+                    # keep those with enough segments (gap-tolerant — only real
+                    # event_* groups are visited).
                     with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
-                        present = read_shard_meta(h5_path)['present_events']
-                        valid = []
-                        for i in present:
-                            ek = f'event_{int(i):03d}'
-                            if ek not in f:
-                                continue
-                            n_seg = int(f[ek].attrs.get('n_segments', 0))
-                            if n_seg >= self.min_segments:
-                                valid.append(int(i))
-                        index = np.array(valid, dtype=np.int64)
+                        valid = [
+                            int(k.rsplit('_', 1)[1]) for k in f.keys()
+                            if k.startswith('event_')
+                            and int(f[k].attrs.get('n_segments', 0))
+                            >= self.min_segments]
+                        index = np.array(sorted(valid), dtype=np.int64)
                 else:
                     index = read_shard_meta(h5_path)['present_events']
             except Exception as e:

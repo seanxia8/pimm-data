@@ -38,16 +38,13 @@ Registered in :data:`pimm_data.DATASETS` for config-driven construction
 via ``dict(type="JAXTPCDataset", ...)``.
 """
 
-import os
 import re
 import logging
-from copy import deepcopy
 
 import numpy as np
 
 from .builder import DATASETS
-from .defaults import DefaultDataset
-from ._joint_index import build_joint_index
+from ._dataset_base import _MultiModalShardDataset
 from ._label_decorate import gather_with_fill
 from .readers.jaxtpc_edep import JAXTPCEdepReader
 from .readers.jaxtpc_sensor import JAXTPCSensorReader
@@ -58,7 +55,7 @@ log = logging.getLogger(__name__)
 
 
 @DATASETS.register_module()
-class JAXTPCDataset(DefaultDataset):
+class JAXTPCDataset(_MultiModalShardDataset):
     """LArTPC multimodal dataset with nested per-stream output.
 
     Parameters
@@ -196,7 +193,10 @@ class JAXTPCDataset(DefaultDataset):
         # `_n_events = min(len(r) ...)`, which left each reader mapping idx
         # through its own present-key index → silent desync under
         # min_deposits>0 or a gap present in some-but-not-all modalities.)
-        self._build_joint_index()
+        self._build_joint_index(
+            source_label=f"JAXTPCDataset({self._source_data_root!r})",
+            filter_label=(f"min_deposits={self._min_deposits}"
+                          if self._min_deposits > 0 else ''))
 
         super().__init__(
             split=split, data_root=data_root,
@@ -212,58 +212,6 @@ class JAXTPCDataset(DefaultDataset):
                 f"after filters (min_deposits={min_deposits}, "
                 f"max_len={max_len}). Lower min_deposits or verify the "
                 f"dataset has events meeting it.")
-
-    @staticmethod
-    def _validate_modalities(modalities):
-        mods = set(modalities)
-        if not mods:
-            raise ValueError("modalities is empty; must load at least one")
-        unknown = mods - {'edep', 'sensor', 'hits', 'labl'}
-        if unknown:
-            raise ValueError(
-                f"Unknown modalities {unknown}; valid: "
-                "'edep', 'sensor', 'hits', 'labl'")
-        if mods == {'labl'}:
-            raise ValueError(
-                "Invalid modality combination ('labl',): labl is a "
-                "dimension table and requires an instance-bearing modality "
-                "('edep' or 'hits') to join against. "
-                "See README §Modality combinations.")
-        if mods == {'sensor', 'labl'}:
-            raise ValueError(
-                "Invalid modality combination ('sensor', 'labl'): sensor has "
-                "no instance separation, so labl cannot be attached. Add "
-                "'hits' or 'edep' to the modalities tuple. "
-                "See README §Modality combinations.")
-
-    def _modality_root(self, modality):
-        mod_dir = os.path.join(self._source_data_root, modality)
-        if os.path.isdir(mod_dir):
-            return mod_dir
-        return self._source_data_root
-
-    def _build_joint_index(self):
-        """Build one joint cross-modality event index; inject into all readers.
-
-        Delegates to :func:`pimm_data._joint_index.build_joint_index`. See
-        that module for the desync this prevents (Phase A / D42).
-        """
-        named = [(n, r) for n, r in (
-            ('edep', self.edep_reader), ('sensor', self.sensor_reader),
-            ('hits', self.hits_reader), ('labl', self.labl_reader))
-            if r is not None]
-        self._n_events = build_joint_index(
-            named, strict_lengths=self._strict_lengths,
-            source_label=f"JAXTPCDataset({self._source_data_root!r})",
-            filter_label=(f"min_deposits={self._min_deposits}"
-                          if self._min_deposits > 0 else ''))
-
-    def get_data_list(self):
-        n = getattr(self, '_n_events', 0)
-        max_len = getattr(self, '_max_len', -1)
-        if max_len > 0:
-            n = min(n, max_len)
-        return list(range(n))
 
     def get_data(self, idx):
         """Load one event as a nested dict (schema: see module docstring)."""
@@ -604,56 +552,3 @@ class JAXTPCDataset(DefaultDataset):
         if not all_labels:
             return np.zeros(0, dtype=np.int32)
         return np.concatenate(all_labels, axis=0)
-
-    def get_data_name(self, idx):
-        reader = self._canonical_reader
-        file_idx = int(np.searchsorted(reader.cumulative_lengths, idx, side='right'))
-        local = idx - (int(reader.cumulative_lengths[file_idx - 1])
-                       if file_idx > 0 else 0)
-        event_num = reader.indices[file_idx][local]
-        fname = os.path.basename(reader.h5_files[file_idx])
-        return f"{fname}_evt{event_num:03d}"
-
-    def prepare_test_data(self, idx):
-        """Test-time data prep.
-
-        Expects ``segment`` to be produced at the top level by a terminal
-        :class:`Collect` transform (e.g. ``Collect(stream='edep', ...)``).
-        """
-        data_dict = self.get_data(idx)
-        data_dict = self.transform(data_dict)
-        result_dict = dict(name=data_dict.pop("name"))
-        if "segment" in data_dict:
-            result_dict["segment"] = data_dict.pop("segment")
-        if "origin_segment" in data_dict:
-            assert "inverse" in data_dict
-            result_dict["origin_segment"] = data_dict.pop("origin_segment")
-            result_dict["inverse"] = data_dict.pop("inverse")
-
-        data_dict_list = [aug(deepcopy(data_dict)) for aug in self.aug_transform]
-        fragment_list = []
-        for data in data_dict_list:
-            if self.test_voxelize is not None:
-                data_part_list = self.test_voxelize(data)
-            else:
-                data["index"] = np.arange(data["coord"].shape[0])
-                data_part_list = [data]
-            for data_part in data_part_list:
-                if self.test_crop is not None:
-                    data_part = self.test_crop(data_part)
-                else:
-                    data_part = [data_part]
-                fragment_list += data_part
-        fragment_list = [self.post_transform(f) for f in fragment_list]
-        result_dict["fragment_list"] = fragment_list
-        return result_dict
-
-    def __del__(self):
-        for attr in ('edep_reader', 'sensor_reader', 'labl_reader',
-                     'hits_reader'):
-            reader = getattr(self, attr, None)
-            if reader is not None:
-                try:
-                    reader.close()
-                except Exception:
-                    pass

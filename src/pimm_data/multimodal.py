@@ -193,13 +193,7 @@ class MultiModalEventDataset(Dataset):
 
     def _event_loc(self, sub, local_idx):
         """(file_idx, event_num) for a sub-dataset's local index."""
-        reader = sub._canonical_reader
-        file_idx = int(np.searchsorted(reader.cumulative_lengths, local_idx,
-                                       side='right'))
-        base = (int(reader.cumulative_lengths[file_idx - 1])
-                if file_idx > 0 else 0)
-        event_num = int(reader.indices[file_idx][local_idx - base])
-        return file_idx, event_num
+        return sub._canonical_reader.locate(local_idx)
 
     def _event_key(self, sub, file_idx, event_num):
         """``(file_index, source_event_idx)`` — the within-config identity key.

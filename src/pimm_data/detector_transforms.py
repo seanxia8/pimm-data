@@ -203,3 +203,88 @@ class RemapSegment:
 
         data_dict[self._key] = out.reshape(orig_shape)
         return data_dict
+
+
+@TRANSFORMS.register_module()
+class AggregateSensorHits:
+    """Aggregate a LUCiD sensor event's multiple hits per PMT into one point.
+
+    A raw LUCiD ``sensor`` event has several hits per PMT; this groups by
+    ``sensor_idx`` and emits one point per PMT — ``coord`` (the shared PMT
+    position), ``energy`` (summed PE), ``time`` (aggregated by
+    ``time_aggregation``), ``sensor_idx`` (unique). It reads the ``stream``
+    sub-dict (``MultiModalEventDataset`` emits nested dicts) and writes the
+    aggregated arrays to the **top level** — the flat ``coord``/``energy``/
+    ``time`` keys the event-SSL pipeline consumes — then drops the consumed
+    sub-dict. This replaces the inline aggregation the dissolved
+    ``LUCiDEventSSLDataset`` did (D32 / the colleague's registered-transform
+    suggestion).
+
+    ``time_aggregation`` ∈ ``{'earliest', 'mean', 'pe_weighted', 'first'}``
+    (the LUCiDEventSSLDataset set): minimum / count-mean / PE-weighted-mean /
+    first-hit time per PMT. When ``stream`` is absent (already flat) it
+    operates on the top-level keys in place.
+    """
+
+    _STRATEGIES = ('earliest', 'mean', 'pe_weighted', 'first')
+
+    def __init__(self, stream='sensor', time_aggregation='earliest',
+                 coord_key='coord', energy_key='energy', time_key='time',
+                 sensor_key='sensor_idx'):
+        if time_aggregation not in self._STRATEGIES:
+            raise ValueError(
+                f"time_aggregation must be one of {self._STRATEGIES}, "
+                f"got {time_aggregation!r}")
+        self.stream = stream
+        self.time_aggregation = time_aggregation
+        self.coord_key = coord_key
+        self.energy_key = energy_key
+        self.time_key = time_key
+        self.sensor_key = sensor_key
+
+    def __call__(self, data_dict):
+        sub = data_dict.get(self.stream)
+        src = sub if isinstance(sub, dict) else data_dict
+        sensor_idx = src.get(self.sensor_key)
+        if sensor_idx is None:
+            return data_dict
+        agg = self._aggregate(
+            np.asarray(sensor_idx).reshape(-1),
+            np.asarray(src[self.coord_key]),
+            np.asarray(src[self.energy_key]),
+            np.asarray(src[self.time_key]))
+        for k, v in agg.items():
+            data_dict[k] = v
+        if isinstance(sub, dict):                 # lift out of the stream
+            data_dict.pop(self.stream, None)
+        return data_dict
+
+    def _aggregate(self, sensor_idx, coord, energy, time):
+        out = {self.coord_key: coord.astype(np.float32, copy=False),
+               self.energy_key: energy.astype(np.float32, copy=False),
+               self.time_key: time.astype(np.float32, copy=False),
+               self.sensor_key: sensor_idx.astype(np.int64, copy=False)}
+        if sensor_idx.size == 0:
+            return out
+        order = np.argsort(sensor_idx, kind='stable')
+        s_sid = sensor_idx[order]
+        uniq, starts = np.unique(s_sid, return_index=True)
+        e_sorted = energy[order]
+        t_sorted = time[order]
+        energy_a = np.add.reduceat(e_sorted, starts, axis=0)
+        if self.time_aggregation == 'earliest':
+            time_a = np.minimum.reduceat(t_sorted, starts, axis=0)
+        elif self.time_aggregation == 'mean':
+            counts = np.diff(np.r_[starts, s_sid.shape[0]])
+            counts = counts.reshape((-1,) + (1,) * (t_sorted.ndim - 1))
+            time_a = np.add.reduceat(t_sorted, starts, axis=0) / counts
+        elif self.time_aggregation == 'pe_weighted':
+            weighted = np.add.reduceat(t_sorted * e_sorted, starts, axis=0)
+            time_a = weighted / np.maximum(energy_a, 1.0e-6)
+        else:  # 'first'
+            time_a = t_sorted[starts]
+        out[self.coord_key] = coord[order][starts].astype(np.float32, copy=False)
+        out[self.energy_key] = energy_a.astype(np.float32, copy=False)
+        out[self.time_key] = time_a.astype(np.float32, copy=False)
+        out[self.sensor_key] = uniq.astype(np.int64, copy=False)
+        return out

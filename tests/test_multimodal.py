@@ -10,7 +10,7 @@ import numpy as np
 import h5py
 import pytest
 
-from pimm_data.testing import make_jaxtpc_sample
+from pimm_data.testing import make_jaxtpc_sample, make_lucid_sample
 from pimm_data.multimodal import MultiModalEventDataset
 
 _SRC = dict(type='JAXTPCDataset', modalities=('edep',), dataset_name='sim')
@@ -158,6 +158,23 @@ def test_min_deposits_filter_through_composition(tmp_path):
     # the dropped event is absent from identity too (sei is element 2)
     seis = {idn[2] for idn in _identity_set(ds)}
     assert 1 not in seis
+
+
+def test_min_points_filters_low_pmt_events(tmp_path):
+    """min_points (LUCiD SSL dissolve): events with too few sensor PMTs are
+    dropped at index time (strict >), counting unique PMTs."""
+    root = make_lucid_sample(str(tmp_path), n_events=6, n_sensors=64, n_hits=120)
+    src = dict(type='LUCiDDataset', modalities=('sensor',), dataset_name='wc')
+    sources = [dict(root=root, label=0, config_id=0)]
+    base = MultiModalEventDataset(src, sources, split='all')
+    n_all = len(base)
+    assert n_all == 6
+    # unique PMTs per event <= n_sensors=64, so min_points=64 drops every event
+    with pytest.raises(ValueError, match='0 events'):
+        MultiModalEventDataset(src, sources, split='all', min_points=64)
+    # a low threshold keeps (almost) all; never more than the baseline
+    kept = MultiModalEventDataset(src, sources, split='all', min_points=1)
+    assert 0 < len(kept) <= n_all
 
 
 def test_event_identity_shape(tmp_path):

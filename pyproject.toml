@@ -8,7 +8,8 @@ dependencies = [
     "h5py",
     "hdf5plugin",  # blosc/zstd/lz4 HDF5 filters — required to read JAXTPC
                    # production output (default codec is blosc-zstd)
-    "torch",
+    "torch>=2.5,<2.6",  # match the pimm conda env (pytorch=2.5.0+cu124); the
+                        # editable install must not pull a different CUDA build
 ]
 
 [project.optional-dependencies]

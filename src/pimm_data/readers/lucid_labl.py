@@ -68,15 +68,9 @@ Output dict (flat; dataset layer rebuilds nested
     labl_track_ancestor_particle_idx      (T,) int32   (derived)
 """
 
-import os
-import glob
-import logging
 import numpy as np
-import h5py
 
-from .._shard_meta import read_shard_meta, open_event_files
-
-log = logging.getLogger(__name__)
+from ._base import ShardReaderBase
 
 
 _PARTICLE_KEYS = (
@@ -115,7 +109,7 @@ _INT_KEYS = {'category', 'interaction_idx',
              'primary_track_ids_data', 'primary_track_ids_offsets'}
 
 
-class LUCiDLablReader:
+class LUCiDLablReader(ShardReaderBase):
     """Reads per-event label tables from LUCiD ``labl/`` files.
 
     Parameters
@@ -128,60 +122,13 @@ class LUCiDLablReader:
         File prefix — matches ``{dataset_name}_labl_*.h5``.
     """
 
+    _MODALITY = 'labl'
+
     def __init__(self, data_root, split='', dataset_name='wc', **kwargs):
         self.data_root = data_root
         self.split = split
         self.dataset_name = dataset_name
-
-        self.h5_files = self._find_files()
-        assert len(self.h5_files) > 0, (
-            f"No LUCiD labl files found for '{dataset_name}' in "
-            f"{data_root}/{split}")
-
-        self._initted = False
-        self._h5data = []
-        self._build_index()
-
-    def _find_files(self):
-        for pattern in (
-            os.path.join(self.data_root, self.split,
-                         f'{self.dataset_name}_labl_*.h5'),
-            os.path.join(self.data_root, f'{self.dataset_name}_labl_*.h5'),
-        ):
-            files = sorted(glob.glob(pattern))
-            if files:
-                return files
-        return []
-
-    def _build_index(self):
-        self.cumulative_lengths = []
-        self.indices = []
-
-        for h5_path in self.h5_files:
-            try:
-                index = read_shard_meta(h5_path)['present_events']
-            except Exception as e:
-                log.warning("Error processing %s: %s", h5_path, e)
-                index = np.array([], dtype=np.int64)
-
-            self.cumulative_lengths.append(len(index))
-            self.indices.append(index)
-
-        self.cumulative_lengths = np.cumsum(self.cumulative_lengths)
-        log.info("LUCiDLablReader: %d events from %d files",
-                 self.cumulative_lengths[-1], len(self.h5_files))
-
-    def h5py_worker_init(self):
-        self._h5data = open_event_files(self.h5_files, self.indices)
-        self._initted = True
-
-    def _locate_event(self, idx):
-        file_idx = int(np.searchsorted(self.cumulative_lengths, idx,
-                                       side='right'))
-        local_idx = idx - (int(self.cumulative_lengths[file_idx - 1])
-                           if file_idx > 0 else 0)
-        event_num = self.indices[file_idx][local_idx]
-        return self._h5data[file_idx], f'event_{event_num:03d}'
+        self._init_shards()
 
     @staticmethod
     def _cast(arr, key):
@@ -282,17 +229,3 @@ class LUCiDLablReader:
                                                n_particles)
 
         return data
-
-    def __len__(self):
-        return (int(self.cumulative_lengths[-1])
-                if len(self.cumulative_lengths) > 0 else 0)
-
-    def close(self):
-        if self._initted:
-            for fh in self._h5data:
-                try:
-                    fh.close()
-                except Exception:
-                    pass
-            self._h5data = []
-            self._initted = False

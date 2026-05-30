@@ -17,18 +17,13 @@ Output: a dict of numpy arrays per volume, keyed ``labl_v{N}_{col}`` where
 (Exact columns depend on the labl writer / the reader's ``label_keys``.)
 """
 
-import os
-import glob
-import logging
 import numpy as np
 import h5py
 
-from .._shard_meta import read_shard_meta, open_event_files
-
-log = logging.getLogger(__name__)
+from ._base import ShardReaderBase
 
 
-class JAXTPCLablReader:
+class JAXTPCLablReader(ShardReaderBase):
     """Reads per-volume track_id → label lookup tables.
 
     Parameters
@@ -43,66 +38,15 @@ class JAXTPCLablReader:
         Which label datasets to load (default: all available).
     """
 
+    _MODALITY = 'labl'
+
     def __init__(self, data_root, split='train', dataset_name='sim',
                  label_keys=None):
         self.data_root = data_root
         self.split = split
         self.dataset_name = dataset_name
         self.label_keys = label_keys
-
-        self.h5_files = self._find_files()
-        assert len(self.h5_files) > 0, (
-            f"No labl files found for '{dataset_name}' in {data_root}/{split}")
-
-        self._initted = False
-        self._h5data = []
-
-        self._build_index()
-
-    def _find_files(self):
-        pattern = os.path.join(
-            self.data_root, self.split,
-            f'{self.dataset_name}_labl_*.h5')
-        files = sorted(glob.glob(pattern))
-        if not files:
-            pattern = os.path.join(
-                self.data_root, f'{self.dataset_name}_labl_*.h5')
-            files = sorted(glob.glob(pattern))
-        return files
-
-    def _build_index(self):
-        self.cumulative_lengths = []
-        self.indices = []
-
-        for h5_path in self.h5_files:
-            try:
-                # Index from event groups actually present, not
-                # arange(n_events): production may skip an event (e.g.
-                # capacity overflow), leaving a gap with n_events unchanged —
-                # arange would then KeyError at read time. (Cached scan — A1.)
-                index = read_shard_meta(h5_path)['present_events']
-            except Exception as e:
-                log.warning("Error processing %s: %s", h5_path, e)
-                index = np.array([], dtype=np.int64)
-
-            self.cumulative_lengths.append(len(index))
-            self.indices.append(index)
-
-        self.cumulative_lengths = np.cumsum(self.cumulative_lengths)
-        log.info("JAXTPCLablReader: %d events from %d files",
-                 self.cumulative_lengths[-1], len(self.h5_files))
-
-    def h5py_worker_init(self):
-        self._h5data = open_event_files(self.h5_files, self.indices)
-        self._initted = True
-
-    def _locate_event(self, idx):
-        file_idx = int(np.searchsorted(self.cumulative_lengths, idx, side='right'))
-        local_idx = idx - (int(self.cumulative_lengths[file_idx - 1]) if file_idx > 0 else 0)
-        event_num = self.indices[file_idx][local_idx]
-        event_key = f'event_{event_num:03d}'
-        f = self._h5data[file_idx]
-        return f, event_key
+        self._init_shards()
 
     def read_event(self, idx):
         """Read one event's per-volume label lookup tables.
@@ -140,16 +84,3 @@ class JAXTPCLablReader:
                 data_dict[f'{prefix}_{lk}'] = vol[lk][:].astype(np.int32)
 
         return data_dict
-
-    def __len__(self):
-        return int(self.cumulative_lengths[-1]) if len(self.cumulative_lengths) > 0 else 0
-
-    def close(self):
-        if self._initted:
-            for f in self._h5data:
-                try:
-                    f.close()
-                except Exception:
-                    pass
-            self._h5data = []
-            self._initted = False

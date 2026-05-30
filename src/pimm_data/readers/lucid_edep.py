@@ -21,18 +21,13 @@ Output dict:
     n_cherenkov (N,1) int32     number of Cherenkov photons produced
 """
 
-import os
-import glob
-import logging
 import numpy as np
 import h5py
 
-from .._shard_meta import read_shard_meta, open_event_files
-
-log = logging.getLogger(__name__)
+from ._base import ShardReaderBase
 
 
-class LUCiDEdepReader:
+class LUCiDEdepReader(ShardReaderBase):
     """Reads 3D segment deposits from LUCiD ``edep/`` files.
 
     Parameters
@@ -49,6 +44,8 @@ class LUCiDEdepReader:
         Also emit ``direction``, ``beta_start``, ``n_cherenkov``.
     """
 
+    _MODALITY = 'edep'
+
     def __init__(self, data_root, split='', dataset_name='wc',
                  min_segments=0, include_physics=True, **kwargs):
         self.data_root = data_root
@@ -56,69 +53,23 @@ class LUCiDEdepReader:
         self.dataset_name = dataset_name
         self.min_segments = int(min_segments)
         self.include_physics = bool(include_physics)
+        self._init_shards()
 
-        self.h5_files = self._find_files()
-        assert len(self.h5_files) > 0, (
-            f"No LUCiD edep files found for '{dataset_name}' in "
-            f"{data_root}/{split}")
+    def _index_for_shard(self, h5_path):
+        """Present events, filtered by ``min_segments`` when set.
 
-        self._initted = False
-        self._h5data = []
-        self._build_index()
-
-    def _find_files(self):
-        for pattern in (
-            os.path.join(self.data_root, self.split,
-                         f'{self.dataset_name}_edep_*.h5'),
-            os.path.join(self.data_root, f'{self.dataset_name}_edep_*.h5'),
-        ):
-            files = sorted(glob.glob(pattern))
-            if files:
-                return files
-        return []
-
-    def _build_index(self):
-        self.cumulative_lengths = []
-        self.indices = []
-
-        for h5_path in self.h5_files:
-            try:
-                if self.min_segments > 0:
-                    # One open: iterate the present event groups directly and
-                    # keep those with enough segments (gap-tolerant — only real
-                    # event_* groups are visited).
-                    with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
-                        valid = [
-                            int(k.rsplit('_', 1)[1]) for k in f.keys()
-                            if k.startswith('event_')
-                            and int(f[k].attrs.get('n_segments', 0))
-                            >= self.min_segments]
-                        index = np.array(sorted(valid), dtype=np.int64)
-                else:
-                    index = read_shard_meta(h5_path)['present_events']
-            except Exception as e:
-                log.warning("Error processing %s: %s", h5_path, e)
-                index = np.array([], dtype=np.int64)
-
-            self.cumulative_lengths.append(len(index))
-            self.indices.append(index)
-
-        self.cumulative_lengths = np.cumsum(self.cumulative_lengths)
-        log.info("LUCiDEdepReader: %d events from %d files (min_segments=%d)",
-                 self.cumulative_lengths[-1], len(self.h5_files),
-                 self.min_segments)
-
-    def h5py_worker_init(self):
-        self._h5data = open_event_files(self.h5_files, self.indices)
-        self._initted = True
-
-    def _locate_event(self, idx):
-        file_idx = int(np.searchsorted(self.cumulative_lengths, idx,
-                                       side='right'))
-        local_idx = idx - (int(self.cumulative_lengths[file_idx - 1])
-                           if file_idx > 0 else 0)
-        event_num = self.indices[file_idx][local_idx]
-        return self._h5data[file_idx], f'event_{event_num:03d}'
+        One open: iterate the present ``event_*`` groups directly and keep
+        those with enough segments (gap-tolerant — only real groups visited).
+        With the filter off, falls back to the base's present-events."""
+        if self.min_segments > 0:
+            with h5py.File(h5_path, 'r', libver='latest', swmr=True) as f:
+                valid = [
+                    int(k.rsplit('_', 1)[1]) for k in f.keys()
+                    if k.startswith('event_')
+                    and int(f[k].attrs.get('n_segments', 0))
+                    >= self.min_segments]
+            return np.array(sorted(valid), dtype=np.int64)
+        return super()._index_for_shard(h5_path)
 
     def read_event(self, idx):
         if not self._initted:
@@ -159,17 +110,3 @@ class LUCiDEdepReader:
                 np.int32)[:, None]
 
         return data
-
-    def __len__(self):
-        return (int(self.cumulative_lengths[-1])
-                if len(self.cumulative_lengths) > 0 else 0)
-
-    def close(self):
-        if self._initted:
-            for fh in self._h5data:
-                try:
-                    fh.close()
-                except Exception:
-                    pass
-            self._h5data = []
-            self._initted = False

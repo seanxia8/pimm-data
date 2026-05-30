@@ -9,18 +9,13 @@ Output dict:
     and optionally: dx, theta, phi, t0_us, charge, photons
 """
 
-import os
-import glob
-import logging
 import numpy as np
-import h5py
 
-from .._shard_meta import read_shard_meta, read_deposit_counts, open_event_files
-
-log = logging.getLogger(__name__)
+from .._shard_meta import read_deposit_counts
+from ._base import ShardReaderBase
 
 
-class JAXTPCEdepReader:
+class JAXTPCEdepReader(ShardReaderBase):
     """Reads 3D truth deposits from JAXTPC edep HDF5 files.
 
     Concatenates volumes into a single point cloud with a volume_id feature.
@@ -42,6 +37,8 @@ class JAXTPCEdepReader:
         Load only this volume index. None = all volumes.
     """
 
+    _MODALITY = 'edep'
+
     def __init__(self, data_root, split='train', dataset_name='sim',
                  min_deposits=0, include_physics=True, volume=None):
         self.data_root = data_root
@@ -50,63 +47,23 @@ class JAXTPCEdepReader:
         self.min_deposits = min_deposits
         self.include_physics = include_physics
         self.volume = volume
+        self._init_shards()
 
-        self.h5_files = self._find_files()
-        assert len(self.h5_files) > 0, (
-            f"No edep files found for '{dataset_name}' in {data_root}/{split}")
+    def _index_for_shard(self, h5_path):
+        """Present events, filtered by ``min_deposits`` when set.
 
-        self._initted = False
-        self._h5data = []
-
-        self._build_index()
-
-    def _find_files(self):
-        """Discover edep shard files."""
-        pattern = os.path.join(
-            self.data_root, self.split,
-            f'{self.dataset_name}_edep_*.h5')
-        files = sorted(glob.glob(pattern))
-        if not files:
-            pattern = os.path.join(
-                self.data_root, f'{self.dataset_name}_edep_*.h5')
-            files = sorted(glob.glob(pattern))
-        return files
-
-    def _build_index(self):
-        """Scan files, count events, build cumulative index."""
-        self.cumulative_lengths = []
-        self.indices = []
-
-        for h5_path in self.h5_files:
-            try:
-                if self.min_deposits > 0:
-                    # Per-event deposit counts via the cached scan (F16) — the
-                    # dominant index-build cost when min_deposits>0; memoized so
-                    # train/val/test (and tiered) datasets over the same shards
-                    # share one pass. Counts are over present events only.
-                    counts = read_deposit_counts(h5_path)
-                    valid = [num for num in sorted(counts)
-                             if self._count_from_cache(counts[num])
-                             >= self.min_deposits]
-                    index = np.array(valid, dtype=np.int64)
-                else:
-                    # Index from event groups actually present, not
-                    # arange(n_events): production may skip an event
-                    # (capacity overflow) leaving a gap — arange would
-                    # KeyError at read time. (Cached scan — A1.)
-                    index = read_shard_meta(h5_path)['present_events']
-
-            except Exception as e:
-                log.warning("Error processing %s: %s", h5_path, e)
-                index = np.array([], dtype=np.int64)
-
-            self.cumulative_lengths.append(len(index))
-            self.indices.append(index)
-
-        self.cumulative_lengths = np.cumsum(self.cumulative_lengths)
-        log.info("JAXTPCEdepReader: %d events from %d files (min_deposits=%d)",
-                 self.cumulative_lengths[-1], len(self.h5_files),
-                 self.min_deposits)
+        Uses the cached per-event deposit-count scan (F16) — the dominant
+        index-build cost when min_deposits>0; memoized so train/val/test (and
+        tiered) datasets over the same shards share one pass. With the filter
+        off, falls back to the base's plain present-events (gap-tolerant — F6).
+        """
+        if self.min_deposits > 0:
+            counts = read_deposit_counts(h5_path)
+            return np.array(
+                [num for num in sorted(counts)
+                 if self._count_from_cache(counts[num]) >= self.min_deposits],
+                dtype=np.int64)
+        return super()._index_for_shard(h5_path)
 
     def _count_from_cache(self, c):
         """Deposit total for the ``min_deposits`` filter from a cached
@@ -125,21 +82,6 @@ class JAXTPCEdepReader:
             return sum(c['per_vol'])
         return c['positions']
 
-    def h5py_worker_init(self):
-        """Lazily open file handles (called after DataLoader fork)."""
-        self._h5data = open_event_files(self.h5_files, self.indices)
-        self._initted = True
-
-    def _locate_event(self, idx):
-        """Map global index → (file_handle, event_key, n_volumes)."""
-        file_idx = int(np.searchsorted(self.cumulative_lengths, idx, side='right'))
-        local_idx = idx - (int(self.cumulative_lengths[file_idx - 1]) if file_idx > 0 else 0)
-        event_num = self.indices[file_idx][local_idx]
-        event_key = f'event_{event_num:03d}'
-        f = self._h5data[file_idx]
-        n_volumes = int(f['config'].attrs.get('n_volumes', 1))
-        return f, event_key, n_volumes
-
     def read_event(self, idx):
         """Read one event, return flat dict of numpy arrays.
 
@@ -148,7 +90,8 @@ class JAXTPCEdepReader:
         if not self._initted:
             self.h5py_worker_init()
 
-        f, event_key, n_volumes = self._locate_event(idx)
+        f, event_key = self._locate_event(idx)
+        n_volumes = int(f['config'].attrs.get('n_volumes', 1))
         evt = f[event_key]
 
         vol_arrays = []
@@ -260,17 +203,3 @@ class JAXTPCEdepReader:
             'energy': np.zeros((0, 1), dtype=np.float32),
             'volume_id': np.zeros((0, 1), dtype=np.int32),
         }
-
-    def __len__(self):
-        return int(self.cumulative_lengths[-1]) if len(self.cumulative_lengths) > 0 else 0
-
-    def close(self):
-        """Close open file handles."""
-        if self._initted:
-            for f in self._h5data:
-                try:
-                    f.close()
-                except Exception:
-                    pass
-            self._h5data = []
-            self._initted = False

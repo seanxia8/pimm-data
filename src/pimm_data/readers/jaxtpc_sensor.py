@@ -12,18 +12,17 @@ Handles both old format (planes directly under event) and new format
 (planes under volume_N/ subgroups).
 """
 
-import os
-import glob
 import logging
 import numpy as np
 import h5py
 
-from .._shard_meta import read_shard_meta, open_event_files
+from .._shard_meta import read_shard_meta
+from ._base import ShardReaderBase
 
 log = logging.getLogger(__name__)
 
 
-class JAXTPCSensorReader:
+class JAXTPCSensorReader(ShardReaderBase):
     """Reads sparse raw sensor signals from JAXTPC ``sensor/`` HDF5 files.
 
     Parameters
@@ -40,6 +39,8 @@ class JAXTPCSensorReader:
         If True, subtract pedestal from uint16 values.
     """
 
+    _MODALITY = 'sensor'
+
     def __init__(self, data_root, split='train', dataset_name='sim',
                  planes='all', decode_digitization=True):
         self.data_root = data_root
@@ -47,63 +48,8 @@ class JAXTPCSensorReader:
         self.dataset_name = dataset_name
         self.planes = planes
         self.decode_digitization = decode_digitization
-
-        self.h5_files = self._find_files()
-        assert len(self.h5_files) > 0, (
-            f"No sensor files found for '{dataset_name}' in {data_root}/{split}")
-
-        self._initted = False
-        self._h5data = []
-
-        self._build_index()
+        self._init_shards()
         self.readout_type = self._detect_readout_type()
-
-    def _find_files(self):
-        """Locate sensor shard files."""
-        pattern = os.path.join(
-            self.data_root, self.split,
-            f'{self.dataset_name}_sensor_*.h5')
-        files = sorted(glob.glob(pattern))
-        if not files:
-            pattern = os.path.join(
-                self.data_root, f'{self.dataset_name}_sensor_*.h5')
-            files = sorted(glob.glob(pattern))
-        return files
-
-    def _build_index(self):
-        self.cumulative_lengths = []
-        self.indices = []
-
-        for h5_path in self.h5_files:
-            try:
-                # Index from event groups actually present, not
-                # arange(n_events): production may skip an event (e.g.
-                # capacity overflow), leaving a gap with n_events unchanged —
-                # arange would then KeyError at read time. (Cached scan; the
-                # readout-type probe reuses the same open — A1.)
-                index = read_shard_meta(h5_path)['present_events']
-            except Exception as e:
-                log.warning("Error processing %s: %s", h5_path, e)
-                index = np.array([], dtype=np.int64)
-
-            self.cumulative_lengths.append(len(index))
-            self.indices.append(index)
-
-        self.cumulative_lengths = np.cumsum(self.cumulative_lengths)
-        log.info("JAXTPCSensorReader: %d events from %d files",
-                 self.cumulative_lengths[-1], len(self.h5_files))
-
-    def h5py_worker_init(self):
-        self._h5data = open_event_files(self.h5_files, self.indices)
-        self._initted = True
-
-    def _locate_event(self, idx):
-        file_idx = int(np.searchsorted(self.cumulative_lengths, idx, side='right'))
-        local_idx = idx - (int(self.cumulative_lengths[file_idx - 1]) if file_idx > 0 else 0)
-        event_num = self.indices[file_idx][local_idx]
-        event_key = f'event_{event_num:03d}'
-        f = self._h5data[file_idx]
-        return f, event_key
 
     def _detect_readout_type(self):
         """Return 'pixel' or 'wire' based on the first file's config attr.
@@ -243,16 +189,3 @@ class JAXTPCSensorReader:
                 data_dict[f'{prefix}.value'] = values
 
         return data_dict
-
-    def __len__(self):
-        return int(self.cumulative_lengths[-1]) if len(self.cumulative_lengths) > 0 else 0
-
-    def close(self):
-        if self._initted:
-            for f in self._h5data:
-                try:
-                    f.close()
-                except Exception:
-                    pass
-            self._h5data = []
-            self._initted = False

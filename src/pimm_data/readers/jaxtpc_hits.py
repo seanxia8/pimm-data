@@ -15,18 +15,17 @@ Also loads per-volume ``group_to_track``, ``deposit_to_group``, and
 All decoding is fully vectorized (no Python loops over groups).
 """
 
-import os
-import glob
 import logging
 import numpy as np
 import h5py
 
-from .._shard_meta import read_shard_meta, open_event_files
+from .._shard_meta import read_shard_meta
+from ._base import ShardReaderBase
 
 log = logging.getLogger(__name__)
 
 
-class JAXTPCHitsReader:
+class JAXTPCHitsReader(ShardReaderBase):
     """Reads per-particle charge attribution from JAXTPC ``hits/`` HDF5 files.
 
     Parameters
@@ -41,68 +40,16 @@ class JAXTPCHitsReader:
         Which planes to load: 'all' or list like ['volume_0_U'].
     """
 
+    _MODALITY = 'hits'
+
     def __init__(self, data_root, split='train', dataset_name='sim',
                  planes='all', **kwargs):
         self.data_root = data_root
         self.split = split
         self.dataset_name = dataset_name
         self.planes = planes
-
-        self.h5_files = self._find_files()
-        assert len(self.h5_files) > 0, (
-            f"No hits files found for '{dataset_name}' in {data_root}/{split}")
-
-        self._initted = False
-        self._h5data = []
-
-        self._build_index()
+        self._init_shards()
         self.readout_type = self._detect_readout_type()
-
-    def _find_files(self):
-        """Locate hits shard files."""
-        pattern = os.path.join(
-            self.data_root, self.split,
-            f'{self.dataset_name}_hits_*.h5')
-        files = sorted(glob.glob(pattern))
-        if not files:
-            pattern = os.path.join(
-                self.data_root, f'{self.dataset_name}_hits_*.h5')
-            files = sorted(glob.glob(pattern))
-        return files
-
-    def _build_index(self):
-        self.cumulative_lengths = []
-        self.indices = []
-
-        for h5_path in self.h5_files:
-            try:
-                # Index from event groups actually present, not
-                # arange(n_events): production may skip an event (e.g.
-                # capacity overflow), leaving a gap with n_events unchanged —
-                # arange would then KeyError at read time. (Cached scan — A1.)
-                index = read_shard_meta(h5_path)['present_events']
-            except Exception as e:
-                log.warning("Error processing %s: %s", h5_path, e)
-                index = np.array([], dtype=np.int64)
-
-            self.cumulative_lengths.append(len(index))
-            self.indices.append(index)
-
-        self.cumulative_lengths = np.cumsum(self.cumulative_lengths)
-        log.info("JAXTPCHitsReader: %d events from %d files",
-                 self.cumulative_lengths[-1], len(self.h5_files))
-
-    def h5py_worker_init(self):
-        self._h5data = open_event_files(self.h5_files, self.indices)
-        self._initted = True
-
-    def _locate_event(self, idx):
-        file_idx = int(np.searchsorted(self.cumulative_lengths, idx, side='right'))
-        local_idx = idx - (int(self.cumulative_lengths[file_idx - 1]) if file_idx > 0 else 0)
-        event_num = self.indices[file_idx][local_idx]
-        event_key = f'event_{event_num:03d}'
-        f = self._h5data[file_idx]
-        return f, event_key
 
     def _detect_readout_type(self):
         """Return 'pixel' or 'wire' based on the first file's config attr.
@@ -282,16 +229,3 @@ class JAXTPCHitsReader:
                     data_dict[f'{prefix}.charge'] = charges
 
         return data_dict
-
-    def __len__(self):
-        return int(self.cumulative_lengths[-1]) if len(self.cumulative_lengths) > 0 else 0
-
-    def close(self):
-        if self._initted:
-            for f in self._h5data:
-                try:
-                    f.close()
-                except Exception:
-                    pass
-            self._h5data = []
-            self._initted = False

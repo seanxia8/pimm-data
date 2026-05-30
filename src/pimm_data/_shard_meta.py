@@ -79,8 +79,11 @@ def read_shard_meta(path):
             int(k.rsplit('_', 1)[1]) for k in f.keys()
             if k.startswith('event_')), dtype=np.int64)
         # Per-file stable-identity vector (O(1)/file), if the writer stamped
-        # it; indexable by event number. Falls back to None (the dataset then
-        # uses the per-event attr or positional identity — D26).
+        # it; indexable by event number. None when absent — the dataset then
+        # resolves source_event_idx from global_event_offset + event_num
+        # (doraemon), else the bare event number (F1 identity chain). (Real
+        # files also carry a per-event source_event_idx attr, but the identity
+        # resolution does not read it — the config vector is authoritative.)
         sei_vec = None
         if cfg is not None and 'source_event_idx' in cfg:
             sei_vec = cfg['source_event_idx'][()].astype(np.int64)

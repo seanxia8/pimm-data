@@ -240,17 +240,20 @@ class MultiModalEventDataset(Dataset):
         for source_idx, source in enumerate(self.datasets):
             sub = source['dataset']
             cid = source['config_id']
-            rows = []          # (local_idx, sei, u)
+            rows = []          # (local_idx, u)
             for local_idx in range(len(sub)):
                 file_idx, event_num = self._event_loc(sub, local_idx)
                 file_index, sei = self._event_key(sub, file_idx, event_num)
                 u = _holdout_uniform(seed, (cid, file_index, sei))
-                rows.append((local_idx, sei, u))
+                rows.append((local_idx, u))
 
-            if n_per_config is not None and self._holdout:
-                # Smallest-u events per source are the holdout (val+test);
-                # the rest are train. Deterministic via the same hash.
-                order = sorted(range(len(rows)), key=lambda i: rows[i][2])
+            if n_per_config is not None:    # implies self._holdout is truthy
+                # Smallest-u events per source are the holdout pool; the rest
+                # are train. Deterministic via the same hash. NOTE: in this mode
+                # 'val' and 'test' return the SAME pool (no val/test split) —
+                # unlike the fractions mode below, which partitions three
+                # disjoint buckets.
+                order = sorted(range(len(rows)), key=lambda i: rows[i][1])
                 holdout_set = set(order[:int(n_per_config)])
                 if self.split == 'train':
                     sel = [i for i in range(len(rows)) if i not in holdout_set]
@@ -258,19 +261,17 @@ class MultiModalEventDataset(Dataset):
                     sel = list(range(len(rows)))
                 else:  # val/test/holdout → the held-out events
                     sel = sorted(holdout_set)
+            elif self.split == 'all':
+                sel = list(range(len(rows)))
             else:
-                role_of = {'train': 'train', 'val': 'val', 'test': 'test'}
-                if self.split == 'all':
-                    sel = list(range(len(rows)))
-                else:
-                    tr, va, te = h.get('fractions', (0.9, 0.05, 0.05)) \
-                        if self._holdout else (1.0, 0.0, 0.0)
-                    sel = []
-                    for i, (_, _, u) in enumerate(rows):
-                        role = ('train' if u < tr
-                                else 'val' if u < tr + va else 'test')
-                        if role == self.split:
-                            sel.append(i)
+                tr, va, _ = h.get('fractions', (0.9, 0.05, 0.05)) \
+                    if self._holdout else (1.0, 0.0, 0.0)
+                sel = []
+                for i, (_, u) in enumerate(rows):
+                    role = ('train' if u < tr
+                            else 'val' if u < tr + va else 'test')
+                    if role == self.split:
+                        sel.append(i)
 
             if self._max_events_per_source > 0:
                 sel = sel[:self._max_events_per_source]

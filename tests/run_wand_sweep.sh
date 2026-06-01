@@ -4,7 +4,7 @@
 # Usage:  bash tests/run_wand_sweep.sh [N_PARALLEL]   (default 6)
 #
 # Each config is an independent pytest process pointed via LUCID_DATA_ROOT
-# at /sdf/data/neutrino/omara/wand_sk_like/config_NNNNNN/. Configs are
+# at /sdf/data/neutrino/cjesus/DORAEMON/WAND/SK_like/config_NNNNNN/. Configs are
 # independent (no shared fixture state) so processes run safely concurrent.
 # Practical floor on wall time is the longest-single-config time
 # (~40 s for config_000003); past ~6 parallel workers FS read bandwidth
@@ -13,7 +13,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."        # repo root
 
-WAND_ROOT="${WAND_ROOT:-/sdf/data/neutrino/omara/wand_sk_like}"
+WAND_ROOT="${WAND_ROOT:-/sdf/data/neutrino/cjesus/DORAEMON/WAND/SK_like}"
 J="${1:-6}"
 
 if [[ ! -d "$WAND_ROOT" ]]; then

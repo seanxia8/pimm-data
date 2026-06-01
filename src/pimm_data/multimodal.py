@@ -101,7 +101,6 @@ class MultiModalEventDataset(Dataset):
         holdout=None,
         max_events_per_source=-1,
         min_points=0,
-        min_points_unique=True,
         mixture=None,
         transform=None,
         loop=1,
@@ -126,7 +125,6 @@ class MultiModalEventDataset(Dataset):
         self._holdout = holdout
         self._max_events_per_source = int(max_events_per_source)
         self._min_points = int(min_points)
-        self._min_points_unique = bool(min_points_unique)
         self._mixture = mixture or {}
         self.transform = Compose(transform)
         self.loop = int(loop)
@@ -279,25 +277,32 @@ class MultiModalEventDataset(Dataset):
                 sel = sel[:self._max_events_per_source]
             kept_per_source.append([rows[i][0] for i in sel])
 
+        if self._min_points > 0:
+            # The min_points scan opened sensor handles in the PARENT; release
+            # them so DataLoader workers reopen fresh after the fork (the
+            # reader pid-guard would reopen anyway, but the parent must not hold
+            # live HDF5 fds across the fork).
+            for source in self.datasets:
+                r = getattr(source['dataset'], 'sensor_reader', None)
+                if r is not None:
+                    r.close()
+
         return self._mix(kept_per_source)
 
     def _passes_min_points(self, sub, local_idx):
         """Per-event point-count filter (LUCiD SSL min_points, strict ``>``).
 
-        Counts the source's sensor hits — unique PMTs when
-        ``min_points_unique`` (matching the aggregated point count), else raw
-        hits. Reads each event, so it is the expensive index path — only taken
-        when ``min_points>0``. A source with no ``sensor_reader`` is not
-        filtered."""
+        Counts the source's unique fired PMTs (matching the aggregated point
+        count the SSL pipeline consumes). Reads each event, so it is the
+        expensive index path — only taken when ``min_points>0``. A source with
+        no ``sensor_reader`` is not filtered."""
         reader = getattr(sub, 'sensor_reader', None)
         if reader is None:
             return True
         sid = reader.read_event(local_idx).get('sensor_idx')
         if sid is None:
             return True
-        n = (int(np.unique(sid).size) if self._min_points_unique
-             else int(np.asarray(sid).size))
-        return n > self._min_points
+        return int(np.unique(sid).size) > self._min_points
 
     def _mix(self, kept_per_source):
         """Apply per-source mixture weights via integer replication."""

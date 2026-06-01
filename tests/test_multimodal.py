@@ -177,6 +177,30 @@ def test_min_points_filters_low_pmt_events(tmp_path):
     assert 0 < len(kept) <= n_all
 
 
+def test_min_points_dataloader_fork_safe(tmp_path):
+    """min_points opens sensor handles in the PARENT during the index scan; the
+    reader pid-guard (+ post-scan close) must let DataLoader workers reopen fresh
+    — no h5py-over-fork corruption. Regression for the construction-time
+    read_event hole."""
+    import torch
+    root = make_lucid_sample(str(tmp_path), n_events=8, n_sensors=64, n_hits=120)
+    src = dict(type='LUCiDDataset', modalities=('sensor',), dataset_name='wc')
+    ds = MultiModalEventDataset(src, [dict(root=root, label=0, config_id=0)],
+                                split='all', min_points=1)
+    if len(ds) < 2:
+        pytest.skip("need >=2 events past min_points")
+    loader = torch.utils.data.DataLoader(
+        ds, batch_size=1, shuffle=False, num_workers=2,
+        collate_fn=lambda b: b)
+    seen = 0
+    for batch in loader:
+        assert isinstance(batch[0], dict) and len(batch[0]) > 0
+        seen += 1
+        if seen >= 4:
+            break
+    assert seen >= 2
+
+
 def test_event_identity_shape(tmp_path):
     root = make_jaxtpc_sample(str(tmp_path), n_events=6)
     ds = MultiModalEventDataset(_SRC, [dict(root=root, label=0, config_id=5)])

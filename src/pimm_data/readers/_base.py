@@ -48,6 +48,7 @@ class ShardReaderBase:
             f"No {self._MODALITY} files found for '{self.dataset_name}' in "
             f"{self.data_root}/{self.split}")
         self._initted = False
+        self._pid = None
         self._h5data = []
         self._build_index()
 
@@ -102,13 +103,30 @@ class ShardReaderBase:
 
     def _locate_event(self, idx):
         """Global ``idx`` → ``(file_handle, event_key)``."""
+        self._ensure_open()
         file_idx, event_num = self.locate(idx)
         return self._h5data[file_idx], EVENT_KEY_FMT.format(event_num)
+
+    def _ensure_open(self):
+        """Open handles in THIS process; reopen after a fork.
+
+        HDF5 file descriptors must not be shared across a fork — if a handle
+        was opened in the parent (e.g. a construction-time count scan) the
+        DataLoader workers inherit corrupt state. We tag the open with the pid
+        and reopen fresh whenever the pid changes (dropping, not closing, the
+        inherited handles — the fds belong to the parent)."""
+        if self._initted and self._pid == os.getpid():
+            return
+        if self._initted:                       # stale handles from a parent fork
+            self._h5data = []
+            self._initted = False
+        self.h5py_worker_init()
 
     def h5py_worker_init(self):
         """Open one handle per shard (None for empty/dangling — F17)."""
         self._h5data = open_event_files(self.h5_files, self.indices)
         self._initted = True
+        self._pid = os.getpid()
 
     # -- size / teardown ----------------------------------------------------
 

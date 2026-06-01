@@ -255,9 +255,9 @@ class LUCiDDataset(_MultiModalShardDataset):
     def _build_edep(self, raw, labl):
         """3D deposit cloud decorated with particle-level labels from labl."""
         sub = dict(raw)  # shallow copy; readers emit fresh arrays
-        track_idx = sub['track_idx']
+        track_idx = sub.get('track_idx')   # guard: malformed shard may omit it
 
-        if labl is not None:
+        if labl is not None and track_idx is not None:
             track_tbl = labl['track']
             track_particle_idx = track_tbl.get('particle_idx')
             if track_particle_idx is not None:

@@ -351,10 +351,12 @@ class LogTransform(object):
         """Transform energy to logarithmic scale on [-1,1]"""
         if self.clip:
             x = np.clip(x, 0.0, self.max_val)
-        # [emin, emax] -> [-1,1]
+        # [emin, emax] -> [-1,1]. Lower-clamp ALWAYS (independent of the upper
+        # `clip`): non-positive energy (zero/negative pixel charge) would give
+        # log10(<=0) -> -inf/nan and silently poison the model.
         y0 = np.log10(self.min_val)
         y1 = np.log10(self.max_val + self.min_val)
-        return 2 * (np.log10(x + self.min_val) - y0) / (y1 - y0) - 1
+        return 2 * (np.log10(np.maximum(x, 0.0) + self.min_val) - y0) / (y1 - y0) - 1
 
     def linear_transform(self, x):
         """Transform energy to linear scale on [-1,1]"""
@@ -2338,64 +2340,6 @@ class HierarchicalMaskGenerator(object):
         data_dict["n_masked_patches"] = len(masked_centroids)
 
         return data_dict
-
-@TRANSFORMS.register_module()
-class HMAECollate(object):
-    """
-    Custom collation for HMAE that handles variable-length masked patches.
-
-    Packs target coordinates/energies into flattened arrays with offsets (no padding).
-    Assumes 'energy' will always be present in data_dict.
-    """
-
-    def __init__(
-        self,
-        points_per_patch: int = 128,
-    ):
-        self.points_per_patch = points_per_patch
-
-    def __call__(self, data_dict):
-        if not data_dict.get("hmae_valid", False):
-            return data_dict
-
-        masked_target_coords = data_dict["masked_target_coords"]
-        masked_target_energy = data_dict["masked_target_energy"]
-
-        # pack into flattened arrays with offsets
-        target_coords_list = []
-        target_energy_list = []
-        target_point_counts = []
-
-        for i, coords in enumerate(masked_target_coords):
-            n_pts = coords.shape[0]
-            target_coords_list.append(coords)
-            target_point_counts.append(n_pts)
-
-            energy = masked_target_energy[i]
-            if energy.ndim == 1:
-                energy = energy[:, None]
-            target_energy_list.append(energy)
-
-        # concatenate into flattened arrays
-        target_coords_flat = np.concatenate(target_coords_list, axis=0)  # (total_points, 3)
-        target_energy_flat = np.concatenate(target_energy_list, axis=0)  # (total_points, 1)
-
-        # compute offset per batch sample (not per patch)
-        # output just the total point count for this sample
-        # batching will convert this to cumulative offsets per batch sample
-        total_points = target_coords_flat.shape[0]
-        target_offset = np.array([total_points], dtype=np.int64)
-
-        data_dict["target_coords"] = target_coords_flat
-        data_dict["target_energy"] = target_energy_flat
-        data_dict["target_offset"] = target_offset
-
-        # clean up lists
-        del data_dict["masked_target_coords"]
-        del data_dict["masked_target_energy"]
-
-        return data_dict
-
 
 @TRANSFORMS.register_module()
 class RandomDrop(object):

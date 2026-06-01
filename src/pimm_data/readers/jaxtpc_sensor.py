@@ -12,17 +12,13 @@ Handles both old format (planes directly under event) and new format
 (planes under volume_N/ subgroups).
 """
 
-import logging
 import numpy as np
 import h5py
 
-from .._shard_meta import read_shard_meta
-from ._base import ShardReaderBase
-
-log = logging.getLogger(__name__)
+from ._jaxtpc_readout import JAXTPCReadoutReader
 
 
-class JAXTPCSensorReader(ShardReaderBase):
+class JAXTPCSensorReader(JAXTPCReadoutReader):
     """Reads sparse raw sensor signals from JAXTPC ``sensor/`` HDF5 files.
 
     Parameters
@@ -51,50 +47,34 @@ class JAXTPCSensorReader(ShardReaderBase):
         self._init_shards()
         self.readout_type = self._detect_readout_type()
 
-    def _detect_readout_type(self):
-        """Return 'pixel' or 'wire' based on the first file's config attr.
-
-        Falls back to inspecting plane datasets if the attr is absent
-        (older files written before the attr was added).
-        """
-        for path in self.h5_files:
-            try:
-                # Common case: the readout_type config attr is present — the
-                # cached meta (already read in _build_index) answers without
-                # a second file open (A1).
-                rt = read_shard_meta(path)['config_attrs'].get('readout_type')
-                if rt is not None:
-                    rt = str(rt)
-                    if rt in ('wire', 'pixel'):
-                        return rt
-                # Attr absent (older files) → inspect plane datasets.
-                with h5py.File(path, 'r', libver='latest', swmr=True) as f:
-                    for ek in f:
-                        if not ek.startswith('event_'):
-                            continue
-                        evt = f[ek]
-                        for vk in evt:
-                            vol = evt[vk]
-                            if not isinstance(vol, h5py.Group):
+    def _scan_readout_type(self, path):
+        """Fallback scan for files without the readout_type attr. Handles old
+        (planes directly under event) + new (planes under volume_N) layouts.
+        Inspects only the first event group. Returns 'wire'/'pixel'/None."""
+        with h5py.File(path, 'r', libver='latest', swmr=True) as f:
+            for ek in f:
+                if not ek.startswith('event_'):
+                    continue
+                evt = f[ek]
+                for vk in evt:
+                    vol = evt[vk]
+                    if not isinstance(vol, h5py.Group):
+                        continue
+                    if vk.startswith('volume_'):
+                        for pk in vol:
+                            pg = vol[pk]
+                            if not isinstance(pg, h5py.Group):
                                 continue
-                            if vk.startswith('volume_'):
-                                for pk in vol:
-                                    pg = vol[pk]
-                                    if not isinstance(pg, h5py.Group):
-                                        continue
-                                    if 'delta_py' in pg:
-                                        return 'pixel'
-                                    if 'delta_wire' in pg:
-                                        return 'wire'
-                            elif 'delta_py' in vol:
+                            if 'delta_py' in pg:
                                 return 'pixel'
-                            elif 'delta_wire' in vol:
+                            if 'delta_wire' in pg:
                                 return 'wire'
-                        break
-            except Exception as e:
-                log.warning("readout detection failed on %s: %s", path, e)
-                continue
-        return 'wire'
+                    elif 'delta_py' in vol:
+                        return 'pixel'
+                    elif 'delta_wire' in vol:
+                        return 'wire'
+                break
+        return None
 
     def _plane_has_payload(self, g):
         """True if this group contains a plane's sparse data payload."""
@@ -164,9 +144,6 @@ class JAXTPCSensorReader(ShardReaderBase):
         Pixel returns keys like:
             sensor.{plane}.{py, pz, time, value}
         """
-        if not self._initted:
-            self.h5py_worker_init()
-
         f, event_key = self._locate_event(idx)
         evt = f[event_key]
 

@@ -57,9 +57,6 @@ class JAXTPCLablReader(ShardReaderBase):
             labl_v0_cluster:     (T,) int32
             labl_v0_interaction: (T,) int32
         """
-        if not self._initted:
-            self.h5py_worker_init()
-
         f, event_key = self._locate_event(idx)
         evt = f[event_key]
 

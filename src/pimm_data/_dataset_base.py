@@ -1,36 +1,73 @@
-"""Shared composition base for the multimodal shard datasets (consolidation).
+"""Shared base for the multimodal shard datasets (consolidation).
 
 :class:`~pimm_data.jaxtpc.JAXTPCDataset` and
 :class:`~pimm_data.lucid.LUCiDDataset` both compose per-modality shard readers
 (edep / sensor / hits / labl), build one joint cross-modality event index
-(Phase A / D42), and expose the same :class:`DefaultDataset` surface
-(``get_data_list`` / ``get_data_name`` / ``prepare_test_data`` / teardown). That
-wiring lives here once; each subclass supplies only its reader construction
-(``__init__``) and its per-modality ``_build_*`` cloud builders / label model.
+(Phase A / D42), and expose the same minimal ``torch.utils.data.Dataset``
+surface (``__getitem__`` → transform pipeline, ``__len__``). That wiring lives
+here once; each subclass supplies only its reader construction (``__init__``)
+and its per-modality ``_build_*`` cloud builders / label model.
+
+This base is self-contained (it inherits ``torch.utils.data.Dataset``
+directly). The generic npy-folder :class:`~pimm_data.defaults.DefaultDataset`
+is a separate standalone utility and is no longer in this inheritance chain —
+the detector datasets never used its npy loader, cache, or test-time
+augmentation path (all overridden or unreached).
 
 A subclass must, in ``__init__`` (before ``super().__init__``): set
 ``_modalities`` / ``_max_len`` / ``_strict_lengths`` / ``_source_data_root``,
 create the ``{edep,sensor,hits,labl}_reader`` attrs (None when absent), set
 ``_canonical_reader`` (the reader whose file names label events), and call
-``self._build_joint_index(source_label, filter_label)``.
+``self._build_joint_index(source_label, filter_label)``. It must also define
+``get_data(idx)`` returning the nested per-modality sample dict.
 """
 
 import os
-from copy import deepcopy
+import logging
 
-import numpy as np
+from torch.utils.data import Dataset
 
-from .defaults import DefaultDataset
+from .transform import Compose
 from ._joint_index import build_joint_index
 
+log = logging.getLogger(__name__)
 
-class _MultiModalShardDataset(DefaultDataset):
-    """Reader composition + joint index + DefaultDataset surface."""
+
+class ShardEventDataset(Dataset):
+    """Reader composition + joint index + a minimal Dataset surface."""
 
     #: Modalities this dataset family understands. Also the reader-iteration
     #: order for the joint index (subclasses may pick a different
     #: ``_canonical_reader`` precedence; close order is irrelevant).
     VALID_MODALITIES = ('edep', 'sensor', 'hits', 'labl')
+
+    def __init__(self, *, split, data_root, transform=None,
+                 ignore_index=-1, loop=1):
+        super().__init__()
+        self.data_root = data_root
+        self.split = split
+        self.transform = Compose(transform)
+        self.ignore_index = ignore_index
+        self.loop = loop
+        # Detector datasets have no test-time-augmentation path; kept as a
+        # plain attr only so any generic consumer that probes it sees False.
+        self.test_mode = False
+        self.data_list = self.get_data_list()
+        log.info(
+            "Totally %d x %d samples in %s %s set.",
+            len(self.data_list), self.loop,
+            os.path.basename(self.data_root), split)
+
+    # -- Dataset surface ---------------------------------------------------
+
+    def prepare_train_data(self, idx):
+        return self.transform(self.get_data(idx))
+
+    def __getitem__(self, idx):
+        return self.prepare_train_data(idx)
+
+    def __len__(self):
+        return len(self.data_list) * self.loop
 
     # -- modality wiring ----------------------------------------------------
 
@@ -72,8 +109,6 @@ class _MultiModalShardDataset(DefaultDataset):
             self._readers_named(), strict_lengths=self._strict_lengths,
             source_label=source_label, filter_label=filter_label)
 
-    # -- DefaultDataset surface --------------------------------------------
-
     def get_data_list(self):
         n = getattr(self, '_n_events', 0)
         max_len = getattr(self, '_max_len', -1)
@@ -87,37 +122,6 @@ class _MultiModalShardDataset(DefaultDataset):
         fname = os.path.basename(reader.h5_files[file_idx])
         return f"{fname}_evt{event_num:03d}"
 
-    def prepare_test_data(self, idx):
-        """Test-time prep. ``segment`` is produced at the top level by a
-        terminal :class:`Collect` transform only when the task needs it, so the
-        pop is conditional (the nested-output datasets don't always emit one)."""
-        data_dict = self.transform(self.get_data(idx))
-        result_dict = dict(name=data_dict.pop("name"))
-        if "segment" in data_dict:
-            result_dict["segment"] = data_dict.pop("segment")
-        if "origin_segment" in data_dict:
-            assert "inverse" in data_dict
-            result_dict["origin_segment"] = data_dict.pop("origin_segment")
-            result_dict["inverse"] = data_dict.pop("inverse")
-
-        data_dict_list = [aug(deepcopy(data_dict)) for aug in self.aug_transform]
-        fragment_list = []
-        for data in data_dict_list:
-            if self.test_voxelize is not None:
-                data_part_list = self.test_voxelize(data)
-            else:
-                data["index"] = np.arange(data["coord"].shape[0])
-                data_part_list = [data]
-            for data_part in data_part_list:
-                if self.test_crop is not None:
-                    data_part = self.test_crop(data_part)
-                else:
-                    data_part = [data_part]
-                fragment_list += data_part
-        result_dict["fragment_list"] = [self.post_transform(f)
-                                        for f in fragment_list]
-        return result_dict
-
     def __del__(self):
         for m in self.VALID_MODALITIES:
             reader = getattr(self, f'{m}_reader', None)
@@ -126,3 +130,8 @@ class _MultiModalShardDataset(DefaultDataset):
                     reader.close()
                 except Exception:
                     pass
+
+
+#: Back-compat alias for the pre-consolidation name (internal; only
+#: jaxtpc.py / lucid.py imported it).
+_MultiModalShardDataset = ShardEventDataset

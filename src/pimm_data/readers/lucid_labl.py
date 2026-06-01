@@ -183,9 +183,6 @@ class LUCiDLablReader(ShardReaderBase):
         return out
 
     def read_event(self, idx):
-        if not self._initted:
-            self.h5py_worker_init()
-
         f, event_key = self._locate_event(idx)
         evt = f[event_key]
 

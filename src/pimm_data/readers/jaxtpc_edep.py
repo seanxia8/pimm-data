@@ -87,9 +87,6 @@ class JAXTPCEdepReader(ShardReaderBase):
 
         No label computation — just raw geometry, physics, and IDs.
         """
-        if not self._initted:
-            self.h5py_worker_init()
-
         f, event_key = self._locate_event(idx)
         n_volumes = int(f['config'].attrs.get('n_volumes', 1))
         evt = f[event_key]

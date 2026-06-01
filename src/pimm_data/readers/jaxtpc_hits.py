@@ -15,17 +15,13 @@ Also loads per-volume ``group_to_track``, ``deposit_to_group``, and
 All decoding is fully vectorized (no Python loops over groups).
 """
 
-import logging
 import numpy as np
 import h5py
 
-from .._shard_meta import read_shard_meta
-from ._base import ShardReaderBase
-
-log = logging.getLogger(__name__)
+from ._jaxtpc_readout import JAXTPCReadoutReader
 
 
-class JAXTPCHitsReader(ShardReaderBase):
+class JAXTPCHitsReader(JAXTPCReadoutReader):
     """Reads per-particle charge attribution from JAXTPC ``hits/`` HDF5 files.
 
     Parameters
@@ -51,43 +47,28 @@ class JAXTPCHitsReader(ShardReaderBase):
         self._init_shards()
         self.readout_type = self._detect_readout_type()
 
-    def _detect_readout_type(self):
-        """Return 'pixel' or 'wire' based on the first file's config attr.
-
-        Falls back to inspecting plane datasets if the attr is absent.
-        """
-        for path in self.h5_files:
-            try:
-                # Fast path via the A1 cache (F15): readout_type lives in the
-                # memoized config_attrs, so the common case adds no extra open
-                # (the sensor reader already takes this path). Only scan plane
-                # datasets when the attr is absent.
-                rt = str(read_shard_meta(path)['config_attrs'].get(
-                    'readout_type', ''))
-                if rt in ('wire', 'pixel'):
-                    return rt
-                with h5py.File(path, 'r', libver='latest', swmr=True) as f:
-                    for ek in f:
-                        if not ek.startswith('event_'):
+    def _scan_readout_type(self, path):
+        """Fallback scan for files without the readout_type attr. Inspects the
+        first event's plane datasets. Returns 'wire'/'pixel'/None."""
+        with h5py.File(path, 'r', libver='latest', swmr=True) as f:
+            for ek in f:
+                if not ek.startswith('event_'):
+                    continue
+                evt = f[ek]
+                for vk in evt:
+                    vol = evt[vk]
+                    if not isinstance(vol, h5py.Group) or not vk.startswith('volume_'):
+                        continue
+                    for pk in vol:
+                        pg = vol[pk]
+                        if not isinstance(pg, h5py.Group):
                             continue
-                        evt = f[ek]
-                        for vk in evt:
-                            vol = evt[vk]
-                            if not isinstance(vol, h5py.Group) or not vk.startswith('volume_'):
-                                continue
-                            for pk in vol:
-                                pg = vol[pk]
-                                if not isinstance(pg, h5py.Group):
-                                    continue
-                                if 'center_py' in pg or 'delta_py' in pg:
-                                    return 'pixel'
-                                if 'center_wires' in pg or 'delta_wires' in pg:
-                                    return 'wire'
-                        break
-            except Exception as e:
-                log.warning("readout detection failed on %s: %s", path, e)
-                continue
-        return 'wire'
+                        if 'center_py' in pg or 'delta_py' in pg:
+                            return 'pixel'
+                        if 'center_wires' in pg or 'delta_wires' in pg:
+                            return 'wire'
+                break
+        return None
 
     @staticmethod
     def _decode_plane_wire(g):
@@ -175,9 +156,6 @@ class JAXTPCHitsReader(ShardReaderBase):
         Plus (both readouts):
             group_to_track_v{N}, deposit_to_group_v{N}, qs_fractions_v{N}
         """
-        if not self._initted:
-            self.h5py_worker_init()
-
         f, event_key = self._locate_event(idx)
         evt = f[event_key]
 

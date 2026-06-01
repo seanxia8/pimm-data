@@ -44,7 +44,7 @@ import logging
 import numpy as np
 
 from .builder import DATASETS
-from ._dataset_base import _MultiModalShardDataset
+from ._dataset_base import ShardEventDataset
 from ._label_decorate import gather_with_fill
 from .readers.jaxtpc_edep import JAXTPCEdepReader
 from .readers.jaxtpc_sensor import JAXTPCSensorReader
@@ -55,7 +55,7 @@ log = logging.getLogger(__name__)
 
 
 @DATASETS.register_module()
-class JAXTPCDataset(_MultiModalShardDataset):
+class JAXTPCDataset(ShardEventDataset):
     """LArTPC multimodal dataset with nested per-stream output.
 
     Parameters
@@ -87,8 +87,7 @@ class JAXTPCDataset(_MultiModalShardDataset):
         Which label datasets to load from labl files (None → all).
     transform : list or None
         Transform pipeline.
-    test_mode, test_cfg, loop, max_len, ignore_index, cache : standard
-        :class:`DefaultDataset` parameters.
+    loop, max_len, ignore_index : standard dataset parameters.
     """
 
 
@@ -105,12 +104,9 @@ class JAXTPCDataset(_MultiModalShardDataset):
         include_physics=True,
         label_keys=None,
         transform=None,
-        test_mode=False,
-        test_cfg=None,
         loop=1,
         max_len=-1,
         ignore_index=-1,
-        cache=False,
         strict_lengths=False,
     ):
         self._modalities = tuple(modalities)
@@ -200,8 +196,7 @@ class JAXTPCDataset(_MultiModalShardDataset):
 
         super().__init__(
             split=split, data_root=data_root,
-            transform=transform, test_mode=test_mode, test_cfg=test_cfg,
-            cache=cache, ignore_index=ignore_index, loop=loop,
+            transform=transform, ignore_index=ignore_index, loop=loop,
         )
 
         # Fail fast on empty data_list — otherwise get_data() crashes later

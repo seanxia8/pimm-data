@@ -43,7 +43,7 @@ Registered in :data:`pimm_data.DATASETS`.
 import numpy as np
 
 from .builder import DATASETS
-from ._dataset_base import _MultiModalShardDataset
+from ._dataset_base import ShardEventDataset
 from ._label_decorate import decorate_labels, gather_with_fill
 from .readers.lucid_edep import LUCiDEdepReader
 from .readers.lucid_sensor import LUCiDSensorReader
@@ -52,7 +52,7 @@ from .readers.lucid_labl import LUCiDLablReader
 
 
 @DATASETS.register_module()
-class LUCiDDataset(_MultiModalShardDataset):
+class LUCiDDataset(ShardEventDataset):
     """Water Cherenkov multimodal dataset with nested per-stream output.
 
     Parameters
@@ -75,8 +75,7 @@ class LUCiDDataset(_MultiModalShardDataset):
     pmt_positions, pmt_positions_file : optional
         Overrides for sensor geometry — normally the file's
         ``config/sensor_positions`` is used.
-    transform, test_mode, test_cfg, loop, max_len, ignore_index, cache :
-        Standard :class:`DefaultDataset` parameters.
+    transform, loop, max_len, ignore_index : standard dataset parameters.
     """
 
     def __init__(
@@ -92,12 +91,9 @@ class LUCiDDataset(_MultiModalShardDataset):
         pmt_positions_file=None,
         label_config=None,
         transform=None,
-        test_mode=False,
-        test_cfg=None,
         loop=1,
         max_len=-1,
         ignore_index=-1,
-        cache=False,
         strict_lengths=False,
     ):
         self._modalities = tuple(modalities)
@@ -160,8 +156,7 @@ class LUCiDDataset(_MultiModalShardDataset):
 
         super().__init__(
             split=split, data_root=data_root,
-            transform=transform, test_mode=test_mode, test_cfg=test_cfg,
-            cache=cache, ignore_index=ignore_index, loop=loop,
+            transform=transform, ignore_index=ignore_index, loop=loop,
         )
 
     def get_data(self, idx):

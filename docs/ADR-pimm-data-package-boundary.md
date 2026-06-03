@@ -202,7 +202,7 @@ path. Do **not** add a `[torch]` extra / lazy-`__init__` guarding now (YAGNI).
 
 **Schema spec.** Author a canonical, versioned-by-tag doc describing the on-disk HDF5 layout that
 JAXTPC `production/save.py` writes and pimm-data reads, covering per file type
-(sensor / edep / hits / labl): group structure, dataset names + dtypes, attributes, the
+(sensor / step / hits / labl): group structure, dataset names + dtypes, attributes, the
 delta/CSR encodings, codec expectations (blosc-zstd default → needs `hdf5plugin`), and the 1-based
 group-id convention. Lives in `pimm-data/docs/` (consumer side), cross-linked from JAXTPC. Optional:
 stamp a `schema_version` attribute at write time and assert it in the readers for loud-fail-on-drift.
@@ -261,5 +261,5 @@ root) must pass, matching the de-fork validation baseline.
 - **Backward-compat window** for the breaking `compute_anchors` public-API removal (any out-of-repo
   importers?).
 - **Dataset output dict as a documented contract**: should the nested-dict output keys
-  (`edep`/`hits`/`sensor`/`labl` → `coord`/`energy`/…) be a documented, tag-versioned interface like
+  (`step`/`hits`/`sensor`/`labl` → `coord`/`energy`/…) be a documented, tag-versioned interface like
   the on-disk schema?

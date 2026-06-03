@@ -39,7 +39,7 @@ These supersede the corresponding ADR statements:
    the real invariant is "the reader/index/decode *source* imports no torch" — guard that statically
    (AST), which is durable and always valid; the dynamic import-under-ban becomes an `xfail` marker.**
    Also: promoting readers to the public API is an **ergonomics** win (`from pimm_data import
-   JAXTPCEdepReader`), **not** a torch-free *install* path — you still need torch installed to
+   JAXTPCStepReader`), **not** a torch-free *install* path — you still need torch installed to
    `import pimm_data`. The ADR §5 "bring-your-own-framework entry point" framing is corrected to
    "framework-neutral reader *code* (returns numpy)", which matches the "torch stays required"
    decision (torch is required; the reader code just carries no torch semantics).
@@ -209,8 +209,8 @@ After PR-C lands (consumer gone):
 - Promote readers + joint-index to top-level API. In `src/pimm_data/__init__.py`, after `:37`:
   ```python
   from .readers import (
-      JAXTPCEdepReader, JAXTPCSensorReader, JAXTPCHitsReader, JAXTPCLablReader,
-      LUCiDEdepReader, LUCiDSensorReader, LUCiDHitsReader, LUCiDLablReader,
+      JAXTPCStepReader, JAXTPCSensorReader, JAXTPCHitsReader, JAXTPCLablReader,
+      LUCiDStepReader, LUCiDSensorReader, LUCiDHitsReader, LUCiDLablReader,
   )
   from ._joint_index import build_joint_index
   ```
@@ -222,16 +222,16 @@ After PR-C lands (consumer gone):
   dynamic test** (torch-free *import* is a non-goal); add a one-line comment stating the rationale.
   Migrate to an `import-linter` contract if/when real CI lands.
 - *(Optional, separate)* extend the pimm shim (`pimm/datasets/__init__.py`) to re-export readers if
-  you want `pimm.datasets.JAXTPCEdepReader` — not required; PR-E is pimm-data-only.
+  you want `pimm.datasets.JAXTPCStepReader` — not required; PR-E is pimm-data-only.
 
 ### PR-F — Schema doc only (pimm-data; **no `schema_version`, no JAXTPC change** — decided)
-- New doc `docs/SCHEMA-on-disk.md` (full spec drafted by Agent 4: sensor/edep/hits/labl group
+- New doc `docs/SCHEMA-on-disk.md` (full spec drafted by Agent 4: sensor/step/hits/labl group
   structure, dataset names/dtypes, the delta + CSR encodings, codec/`hdf5plugin`, 1-based group ids,
   local↔global coords, wire/pixel asymmetry). Cross-link from JAXTPC's README/CLAUDE.
 - **Decision: skip the `schema_version` attribute entirely.** Treat the schema as stable; if it ever
   changes, update this doc. No `save.py`/`make_labl.py` stamp, no reader assert, no JAXTPC repo change
   this round. (The latent schema gaps in §1.8 are documented in the spec as informational, not fixed.)
-- *(Optional)* document the in-memory **output-dict contract** (top-level `edep/hits/sensor/labl`
+- *(Optional)* document the in-memory **output-dict contract** (top-level `step/hits/sensor/labl`
   sub-dicts → keys) — already in module docstrings `jaxtpc.py:14–35`, `lucid.py:12–26`; copy up to the
   doc if you want it documented alongside the on-disk spec.
 

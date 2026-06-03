@@ -103,3 +103,41 @@ def test_dataset_getitem_uses_transforms(jaxtpc_data_root):
                        max_len=1, transform=transform)
     s = ds[0]
     assert torch.is_tensor(s['edep']['coord'])
+
+
+# --- PR-B regression tests for two previously-silent transform bugs -------
+
+def test_clip_gaussian_jitter_zero_mean():
+    """ClipGaussianJitter must be zero-mean.
+
+    Was ``self.mean = np.mean(3)`` -> scalar 3.0, adding a ~+3 offset to every
+    coordinate. With scalar=0 the jitter must be exactly 0, and the mean must
+    be a length-3 zero vector.
+    """
+    from pimm_data.transform import ClipGaussianJitter
+    t = ClipGaussianJitter(scalar=1.0)
+    # Deterministic catch: mean must be a length-3 zero vector, not scalar 3.0.
+    assert np.asarray(t.mean).shape == (3,)
+    assert np.all(np.asarray(t.mean) == 0)
+    # Statistical catch: with the bug the jitter centres on ~+1 (mean 3 -> clip
+    # -> 1) * scalar; zero-mean keeps the applied offset near 0.
+    np.random.seed(0)
+    out = t({'coord': np.zeros((20000, 3), dtype=np.float64)})['coord']
+    assert np.abs(out.mean()) < 0.1
+
+
+def test_random_drop_actually_writes(monkeypatch):
+    """RandomDrop must actually overwrite the dropped rows.
+
+    Was ``data_dict[key][idx][:] = value`` -> wrote into a fancy-index copy
+    (silent no-op). Force apply and a deterministic choice of rows 0,1.
+    """
+    from pimm_data.transform import RandomDrop
+    monkeypatch.setattr(np.random, 'rand', lambda *a, **k: 0.0)
+    monkeypatch.setattr(np.random, 'choice',
+                        lambda n, k, replace=False: np.array([0, 1]))
+    t = RandomDrop(key='energy', p_apply=1.0, p_drop=0.5, value=0.0)
+    energy = np.ones((4, 1), dtype=np.float64)
+    out = t({'energy': energy})['energy']
+    assert out[0, 0] == 0.0 and out[1, 0] == 0.0   # dropped rows written
+    assert out[2, 0] == 1.0 and out[3, 0] == 1.0   # untouched rows preserved

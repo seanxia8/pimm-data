@@ -741,7 +741,7 @@ class SetRandomValue(object):
 class ClipGaussianJitter(object):
     def __init__(self, scalar=0.02, store_jitter=False):
         self.scalar = scalar
-        self.mean = np.mean(3)
+        self.mean = np.zeros(3)  # zero-mean jitter (was np.mean(3) -> scalar 3.0, a +3 offset bug)
         self.cov = np.identity(3)
         self.quantile = 1.96
         self.store_jitter = store_jitter
@@ -1984,7 +1984,8 @@ class RandomDrop(object):
         if self.key in data_dict.keys() and np.random.rand() < self.p_apply:
             n = data_dict[self.key].shape[0]
             idx = np.random.choice(n, int(n*self.p_drop), replace=False)
-            data_dict[self.key][idx][:] = self.value
+            # assign back through the fancy index; `[idx][:] =` wrote into a copy (no-op bug)
+            data_dict[self.key][idx] = self.value
         return data_dict
 
 class Compose(object):

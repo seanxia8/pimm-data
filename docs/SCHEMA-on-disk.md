@@ -15,7 +15,7 @@ is no `schema_version` attribute (deliberate — see ADR §5).
 ## Cross-cutting conventions
 
 - **Files / sharding.** One batch shard per file: `{dataset}_{modality}_{NNNN}.h5`,
-  `modality ∈ {sensor, edep, hits, labl}`, `NNNN` = 4-digit shard index. Reader
+  `modality ∈ {sensor, step, hits, labl}`, `NNNN` = 4-digit shard index. Reader
   glob tries `{root}/{split}/{name}_{modality}_*.h5` then flat `{root}/{name}_{modality}_*.h5`.
 - **Events.** Each event is a top-level group `event_{local_idx:03d}` (`:03d` is a
   minimum width; events ≥1000 widen). The numeric suffix is the **file-local**
@@ -31,7 +31,7 @@ is no `schema_version` attribute (deliberate — see ADR §5).
 - **Volumes.** Deposits are split into N volumes by x-position; each event has
   `volume_{v}` subgroups (empty volumes skipped). `n_volumes` in `config.attrs` and
   per-event `evt.attrs['n_volumes']`.
-- **Coordinates.** Sim runs in volume-*local* frame; edep positions are transformed
+- **Coordinates.** Sim runs in volume-*local* frame; step positions are transformed
   **local→global at write time** (`x_global = x_anode_cm*10 − drift_dir*x_local`;
   y/z += yz_center*10). Sensor/hits indices (wire/pixel/time) are detector index
   space — no transform.
@@ -70,7 +70,7 @@ float32 `(n_volumes, 3, 2)` mm; `pedestals` int32 `(n_volumes, max_planes)` (dig
 
 ---
 
-## 2. EDEP — `{dataset}_edep_{NNNN}.h5`
+## 2. EDEP — `{dataset}_step_{NNNN}.h5`
 Pure-physics 3D truth deposits (no track/group/instance — those live in hits/labl).
 
 **`/config`:** attrs `dataset_name, file_index, source_file, n_events,
@@ -106,7 +106,7 @@ n_volumes, readout_type` + provenance; datasets `num_wires`, `volume_ranges`.
 `num_time_steps` is required to invert the wire CSR packed key.
 
 **Per event / `volume_{v}`** (attr `n_actual` = N; event attr `threshold`):
-- `deposit_to_group` int32 `(N,)` — **row-aligned with edep**, per-deposit group id (1-based).
+- `deposit_to_group` int32 `(N,)` — **row-aligned with step**, per-deposit group id (1-based).
 - `qs_fractions` float16 `(N,)` — each deposit's fraction of its group's recombined charge.
 - `group_to_track` int32 `(G,)` (if available) — group id → Geant4 track_id (1-based; attr `n_groups`).
 
@@ -144,7 +144,7 @@ gap_threshold_mm, git_*`). No `num_wires`/`volume_ranges`/`readout_type`.
 
 | Dataset | shape | meaning |
 |---|---|---|
-| `deposit_to_track` | `(N,)` | per-deposit FK → track_id; **row-aligned with edep**; `−1` if group out of range |
+| `deposit_to_track` | `(N,)` | per-deposit FK → track_id; **row-aligned with step**; `−1` if group out of range |
 | `track_ids` | `(T,)` | unique track ids (PK) |
 | `track_pdg` | `(T,)` | raw PDG (`−1` if missing) |
 | `track_interaction` | `(T,)` | raw interaction id |
@@ -160,6 +160,6 @@ gap_threshold_mm, git_*`). No `num_wires`/`volume_ranges`/`readout_type`.
 ## In-memory output-dict contract (companion)
 Datasets emit a **nested** dict (not bare `coord`); consumers pick a stream via
 `ApplyToStream`/`Collect(stream=...)`. Top-level: `name`, `split`, plus loaded
-modalities `edep`/`hits`/`sensor`/`labl` (+ `bridges` when hits loaded). Per-modality
+modalities `step`/`hits`/`sensor`/`labl` (+ `bridges` when hits loaded). Per-modality
 sub-dict keys are documented in the dataset module docstrings
 (`jaxtpc.py`, `lucid.py`).

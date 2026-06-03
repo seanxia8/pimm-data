@@ -1,7 +1,7 @@
 """Task-matrix combination tests for JAXTPCDataset nested output.
 
 Drives the schema defined in pimm-data's refactor: every combination
-produces a nested dict {'edep': {...}, 'sensor': {...}, 'hits': {...},
+produces a nested dict {'step': {...}, 'sensor': {...}, 'hits': {...},
 'labl': {...}, 'bridges': {...}, 'name', 'split'}. Missing modalities
 have no top-level key. No bare 'coord', no flat namespaced aliases.
 
@@ -75,24 +75,24 @@ def test_row2_ssl_hits(jaxtpc_data_root):
 
 # ---------- Row 3 / 11: SSL on seg / per-deposit regression ----------
 
-def test_row3_ssl_edep(jaxtpc_data_root):
-    """edep only — 3D cloud with physics, no labels."""
-    ds = make_ds(jaxtpc_data_root, modalities=('edep',))
+def test_row3_ssl_step(jaxtpc_data_root):
+    """step only — 3D cloud with physics, no labels."""
+    ds = make_ds(jaxtpc_data_root, modalities=('step',))
     d = ds.get_data(0)
-    assert _top_keys(d) == {'edep'}
-    _assert_point_cloud(d['edep'], expect_dim=3)
-    assert 'segment' not in d['edep']
-    assert 'instance' not in d['edep']
+    assert _top_keys(d) == {'step'}
+    _assert_point_cloud(d['step'], expect_dim=3)
+    assert 'segment' not in d['step']
+    assert 'instance' not in d['step']
 
 
 def test_row11_physics_regression(jaxtpc_data_root):
     """seg with include_physics — charge/photons/dx/theta etc present."""
-    ds = make_ds(jaxtpc_data_root, modalities=('edep',),
+    ds = make_ds(jaxtpc_data_root, modalities=('step',),
                  include_physics=True)
     d = ds.get_data(0)
     for key in ('dx', 'theta', 'phi', 't0_us', 'charge', 'photons'):
-        if key in d['edep']:
-            assert d['edep'][key].shape == (d['edep']['coord'].shape[0], 1), \
+        if key in d['step']:
+            assert d['step'][key].shape == (d['step']['coord'].shape[0], 1), \
                 f"{key} shape unexpected"
 
 
@@ -111,13 +111,13 @@ def test_row5_denoising(jaxtpc_data_root):
 
 # ---------- Row 6 / 10: sensor + seg ----------
 
-def test_row6_sensor_edep(jaxtpc_data_root):
-    """sensor + edep — no direct bridge today but both clouds must load."""
-    ds = make_ds(jaxtpc_data_root, modalities=('sensor', 'edep'))
+def test_row6_sensor_step(jaxtpc_data_root):
+    """sensor + step — no direct bridge today but both clouds must load."""
+    ds = make_ds(jaxtpc_data_root, modalities=('sensor', 'step'))
     d = ds.get_data(0)
-    assert _top_keys(d) == {'sensor', 'edep'}
+    assert _top_keys(d) == {'sensor', 'step'}
     _assert_point_cloud(d['sensor'], expect_dim=2)
-    _assert_point_cloud(d['edep'], expect_dim=3)
+    _assert_point_cloud(d['step'], expect_dim=3)
 
 
 # ---------- Row 7: supervised on inst ----------
@@ -137,13 +137,13 @@ def test_row7_supervised_hits(jaxtpc_data_root):
 
 # ---------- Row 8: supervised on seg ----------
 
-def test_row8_supervised_edep(jaxtpc_data_root):
-    """edep + labl — 3D with segment/instance from labl FK."""
-    ds = make_ds(jaxtpc_data_root, modalities=('edep', 'labl'),
+def test_row8_supervised_step(jaxtpc_data_root):
+    """step + labl — 3D with segment/instance from labl FK."""
+    ds = make_ds(jaxtpc_data_root, modalities=('step', 'labl'),
                  label_key='pdg')
     d = ds.get_data(0)
-    assert _top_keys(d) == {'edep', 'labl'}
-    _assert_point_cloud(d['edep'], expect_dim=3, labeled=True)
+    assert _top_keys(d) == {'step', 'labl'}
+    _assert_point_cloud(d['step'], expect_dim=3, labeled=True)
     some_vol = next(iter(d['labl']))
     assert 'deposit_to_track' in d['labl'][some_vol]
 
@@ -165,14 +165,14 @@ def test_row9_2d_end_to_end(jaxtpc_data_root):
 # ---------- Row 10: 3D end-to-end ----------
 
 def test_row10_3d_end_to_end(jaxtpc_data_root):
-    """sensor + edep + labl — sensor to 3D supervised reconstruction."""
+    """sensor + step + labl — sensor to 3D supervised reconstruction."""
     ds = make_ds(jaxtpc_data_root,
-                 modalities=('sensor', 'edep', 'labl'),
+                 modalities=('sensor', 'step', 'labl'),
                  label_key='pdg')
     d = ds.get_data(0)
-    assert _top_keys(d) == {'sensor', 'edep', 'labl'}
+    assert _top_keys(d) == {'sensor', 'step', 'labl'}
     _assert_point_cloud(d['sensor'], expect_dim=2)
-    _assert_point_cloud(d['edep'], expect_dim=3, labeled=True)
+    _assert_point_cloud(d['step'], expect_dim=3, labeled=True)
 
 
 # ---------- Row 13: joint multi-task (all four) ----------
@@ -180,11 +180,11 @@ def test_row10_3d_end_to_end(jaxtpc_data_root):
 def test_row13_joint_multitask(jaxtpc_data_root):
     """All four modalities — every cloud labeled where possible."""
     ds = make_ds(jaxtpc_data_root,
-                 modalities=('edep', 'sensor', 'hits', 'labl'),
+                 modalities=('step', 'sensor', 'hits', 'labl'),
                  label_key='pdg')
     d = ds.get_data(0)
-    assert _top_keys(d) == {'edep', 'sensor', 'hits', 'labl', 'bridges'}
-    _assert_point_cloud(d['edep'], expect_dim=3, labeled=True)
+    assert _top_keys(d) == {'step', 'sensor', 'hits', 'labl', 'bridges'}
+    _assert_point_cloud(d['step'], expect_dim=3, labeled=True)
     _assert_point_cloud(d['sensor'], expect_dim=2)
     _assert_point_cloud(d['hits'], expect_dim=2, labeled=True)
 
@@ -207,10 +207,10 @@ def test_invalid_labl_only(jaxtpc_data_root):
 
 def test_no_bare_coord_anywhere(jaxtpc_data_root):
     """No top-level bare 'coord', 'energy', 'segment' — all namespaced."""
-    for mods in [('edep',), ('sensor',), ('hits',),
-                 ('edep', 'labl'), ('sensor', 'hits'),
+    for mods in [('step',), ('sensor',), ('hits',),
+                 ('step', 'labl'), ('sensor', 'hits'),
                  ('hits', 'labl'),
-                 ('edep', 'sensor', 'hits', 'labl')]:
+                 ('step', 'sensor', 'hits', 'labl')]:
         ds = make_ds(jaxtpc_data_root, modalities=mods, label_key='pdg')
         d = ds.get_data(0)
         forbidden = {'coord', 'energy', 'segment', 'instance',
@@ -222,10 +222,10 @@ def test_no_bare_coord_anywhere(jaxtpc_data_root):
 def test_bridges_present_iff_inst(jaxtpc_data_root):
     """'bridges' top-level key present exactly when 'hits' is loaded."""
     cases = [
-        (('edep',), False),
+        (('step',), False),
         (('sensor',), False),
         (('hits',), True),
-        (('edep', 'labl'), False),
+        (('step', 'labl'), False),
         (('sensor', 'hits'), True),
         (('hits', 'labl'), True),
     ]
@@ -239,7 +239,7 @@ def test_bridges_present_iff_inst(jaxtpc_data_root):
 
 def test_labl_is_per_volume(jaxtpc_data_root):
     """labl sub-dict is keyed per-volume (v0, v1, ...) with column sub-dicts."""
-    ds = make_ds(jaxtpc_data_root, modalities=('edep', 'labl'),
+    ds = make_ds(jaxtpc_data_root, modalities=('step', 'labl'),
                  label_key='pdg')
     d = ds.get_data(0)
     for vk, vdata in d['labl'].items():
@@ -269,20 +269,20 @@ def test_sensor_and_hits_raw_are_nested(jaxtpc_data_root):
 # test fails if any future dataset change drifts from the documented matrix.
 
 _MATRIX = [
-    # combo,                                    edep sensor hits labl bridges edep_seg edep_inst hits_seg
-    (('edep',),                                (True, False, False, False, False, False, False, False)),
+    # combo,                                    step sensor hits labl bridges step_seg step_inst hits_seg
+    (('step',),                                (True, False, False, False, False, False, False, False)),
     (('sensor',),                              (False, True, False, False, False, False, False, False)),
     (('hits',),                                (False, False, True, False, True, False, False, False)),
-    (('edep', 'sensor'),                       (True, True, False, False, False, False, False, False)),
-    (('edep', 'hits'),                         (True, False, True, False, True, False, False, False)),
+    (('step', 'sensor'),                       (True, True, False, False, False, False, False, False)),
+    (('step', 'hits'),                         (True, False, True, False, True, False, False, False)),
     (('sensor', 'hits'),                       (False, True, True, False, True, False, False, False)),
-    (('edep', 'labl'),                         (True, False, False, True, False, True, True, False)),
+    (('step', 'labl'),                         (True, False, False, True, False, True, True, False)),
     (('hits', 'labl'),                         (False, False, True, True, True, False, False, True)),
-    (('edep', 'sensor', 'hits'),               (True, True, True, False, True, False, False, False)),
-    (('edep', 'sensor', 'labl'),               (True, True, False, True, False, True, True, False)),
-    (('edep', 'hits', 'labl'),                 (True, False, True, True, True, True, True, True)),
+    (('step', 'sensor', 'hits'),               (True, True, True, False, True, False, False, False)),
+    (('step', 'sensor', 'labl'),               (True, True, False, True, False, True, True, False)),
+    (('step', 'hits', 'labl'),                 (True, False, True, True, True, True, True, True)),
     (('sensor', 'hits', 'labl'),               (False, True, True, True, True, False, False, True)),
-    (('edep', 'sensor', 'hits', 'labl'),       (True, True, True, True, True, True, True, True)),
+    (('step', 'sensor', 'hits', 'labl'),       (True, True, True, True, True, True, True, True)),
 ]
 
 
@@ -291,15 +291,15 @@ def test_combination_matrix(jaxtpc_data_root, combo, flags):
     """Every documented combo matches live output."""
     ds = make_ds(jaxtpc_data_root, modalities=combo, label_key='pdg')
     d = ds.get_data(0)
-    edep, sensor, hits, labl, bridges, edep_seg, edep_inst, hits_seg = flags
-    assert ('edep' in d) == edep
+    step, sensor, hits, labl, bridges, step_seg, step_inst, hits_seg = flags
+    assert ('step' in d) == step
     assert ('sensor' in d) == sensor
     assert ('hits' in d) == hits
     assert ('labl' in d) == labl
     assert ('bridges' in d) == bridges
-    has_edep_seg = 'edep' in d and 'segment' in d['edep']
-    has_edep_inst = 'edep' in d and 'instance' in d['edep']
+    has_step_seg = 'step' in d and 'segment' in d['step']
+    has_step_inst = 'step' in d and 'instance' in d['step']
     has_hits_seg = 'hits' in d and 'segment' in d['hits']
-    assert has_edep_seg == edep_seg
-    assert has_edep_inst == edep_inst
+    assert has_step_seg == step_seg
+    assert has_step_inst == step_inst
     assert has_hits_seg == hits_seg

@@ -10,7 +10,7 @@ is identical, so it lives here once instead of in each test file.
 def readers(ds):
     """The dataset's non-None modality readers (order-independent for the
     alignment check, which compares every reader to the first)."""
-    return [r for r in (ds.edep_reader, ds.sensor_reader,
+    return [r for r in (ds.step_reader, ds.sensor_reader,
                         ds.hits_reader, ds.labl_reader) if r is not None]
 
 

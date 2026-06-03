@@ -59,7 +59,7 @@ def test_transforms_registered_count():
 
 def test_build_dataset_resolves_by_type(jaxtpc_data_root):
     cfg = dict(type='JAXTPCDataset', data_root=jaxtpc_data_root,
-               split='', dataset_name='sim', modalities=('edep',),
+               split='', dataset_name='sim', modalities=('step',),
                max_len=2)
     ds = build_dataset(cfg)
     assert isinstance(ds, JAXTPCDataset)
@@ -69,19 +69,19 @@ def test_build_dataset_resolves_by_type(jaxtpc_data_root):
 def test_end_to_end_transform_collate(jaxtpc_data_root):
     """Pipeline: ApplyToStream scopes per-cloud transforms, Collect flattens."""
     transform = [
-        dict(type='ApplyToStream', stream='edep', transforms=[
+        dict(type='ApplyToStream', stream='step', transforms=[
             dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
             dict(type='GridSample', grid_size=0.001, hash_type='fnv',
                  mode='train', return_grid_coord=True),
         ]),
         dict(type='ToTensor'),
-        dict(type='Collect', stream='edep',
+        dict(type='Collect', stream='step',
              keys=('coord', 'grid_coord', 'segment'),
              feat_keys=('coord', 'energy')),
     ]
     ds = JAXTPCDataset(data_root=jaxtpc_data_root, split='',
                        dataset_name='sim',
-                       modalities=('edep', 'labl'), label_key='pdg',
+                       modalities=('step', 'labl'), label_key='pdg',
                        min_deposits=50, max_len=4, transform=transform)
     batch = collate_fn([ds[0], ds[1]])
     assert batch['coord'].shape[1] == 3
@@ -99,10 +99,10 @@ def test_dataset_getitem_uses_transforms(jaxtpc_data_root):
     """
     transform = [dict(type='ToTensor')]
     ds = JAXTPCDataset(data_root=jaxtpc_data_root, split='',
-                       dataset_name='sim', modalities=('edep',),
+                       dataset_name='sim', modalities=('step',),
                        max_len=1, transform=transform)
     s = ds[0]
-    assert torch.is_tensor(s['edep']['coord'])
+    assert torch.is_tensor(s['step']['coord'])
 
 
 # --- PR-B regression tests for two previously-silent transform bugs -------

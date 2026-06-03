@@ -2,7 +2,7 @@
 
 :class:`~pimm_data.jaxtpc.JAXTPCDataset` and
 :class:`~pimm_data.lucid.LUCiDDataset` both compose per-modality shard readers
-(edep / sensor / hits / labl), build one joint cross-modality event index
+(step / sensor / hits / labl), build one joint cross-modality event index
 (Phase A / D42), and expose the same minimal ``torch.utils.data.Dataset``
 surface (``__getitem__`` → transform pipeline, ``__len__``). That wiring lives
 here once; each subclass supplies only its reader construction (``__init__``)
@@ -14,7 +14,7 @@ test-time augmentation path.
 
 A subclass must, in ``__init__`` (before ``super().__init__``): set
 ``_modalities`` / ``_max_len`` / ``_strict_lengths`` / ``_source_data_root``,
-create the ``{edep,sensor,hits,labl}_reader`` attrs (None when absent), set
+create the ``{step,sensor,hits,labl}_reader`` attrs (None when absent), set
 ``_canonical_reader`` (the reader whose file names label events), and call
 ``self._build_joint_index(source_label, filter_label)``. It must also define
 ``get_data(idx)`` returning the nested per-modality sample dict.
@@ -37,7 +37,7 @@ class ShardEventDataset(Dataset):
     #: Modalities this dataset family understands. Also the reader-iteration
     #: order for the joint index (subclasses may pick a different
     #: ``_canonical_reader`` precedence; close order is irrelevant).
-    VALID_MODALITIES = ('edep', 'sensor', 'hits', 'labl')
+    VALID_MODALITIES = ('step', 'sensor', 'hits', 'labl')
 
     def __init__(self, *, split, data_root, transform=None,
                  ignore_index=-1, loop=1):
@@ -80,13 +80,13 @@ class ShardEventDataset(Dataset):
         if mods == {'labl'}:
             raise ValueError(
                 "Invalid modality combination ('labl',): labl is a dimension "
-                "table and requires an instance-bearing modality ('edep' or "
+                "table and requires an instance-bearing modality ('step' or "
                 "'hits') to join against.")
         if mods == {'sensor', 'labl'}:
             raise ValueError(
                 "Invalid modality combination ('sensor', 'labl'): sensor has "
                 "no instance/particle separation, so labl can't be attached. "
-                "Add 'hits' or 'edep' to the modalities tuple.")
+                "Add 'hits' or 'step' to the modalities tuple.")
 
     def _modality_root(self, modality):
         mod_dir = os.path.join(self._source_data_root, modality)

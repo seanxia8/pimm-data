@@ -66,28 +66,28 @@ def test_pixel_hits_coord_is_3d_with_group_id(jaxtpc_pixel_data_root):
 def test_pixel_volume_filter_uses_pixel_plane(jaxtpc_pixel_data_root):
     ds = JAXTPCDataset(
         data_root=jaxtpc_pixel_data_root, split='',
-        modalities=('edep', 'sensor', 'hits'), volume=0)
+        modalities=('step', 'sensor', 'hits'), volume=0)
     s = ds[0]
     assert s['sensor']['planes'] == ['volume_0_Pixel']
     assert s['hits']['planes'] == ['volume_0_Pixel']
-    # edep is volume-filtered at the reader level too.
-    assert set(int(x) for x in s['edep']['volume_id'].ravel()) == {0}
+    # step is volume-filtered at the reader level too.
+    assert set(int(x) for x in s['step']['volume_id'].ravel()) == {0}
 
 
 def test_pixel_labl_decoration(jaxtpc_pixel_data_root):
     ds = JAXTPCDataset(
         data_root=jaxtpc_pixel_data_root, split='',
-        modalities=('edep', 'hits', 'labl'), label_key='pdg')
+        modalities=('step', 'hits', 'labl'), label_key='pdg')
     s = ds[0]
-    # edep gains instance/segment via labl join
-    assert 'instance' in s['edep']
-    assert 'segment' in s['edep']
+    # step gains instance/segment via labl join
+    assert 'instance' in s['step']
+    assert 'segment' in s['step']
     # hits gains segment via group_to_track → track_pdg chain
     assert 'segment' in s['hits']
     assert s['hits']['segment'].shape == (s['hits']['coord'].shape[0],)
     # not all -1 (synth fixture guarantees matched FKs)
     assert (s['hits']['segment'] != -1).any()
-    assert (s['edep']['segment'] != -1).any()
+    assert (s['step']['segment'] != -1).any()
 
 
 def test_pixel_sensor_values_decode_to_float32(jaxtpc_pixel_data_root):

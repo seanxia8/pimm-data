@@ -102,16 +102,16 @@ def test_lucid_instance_interaction_one_hop(tmp_path):
     assert hits["instance_interaction"][:, 0].tolist() == expected.tolist()
 
 
-def test_lucid_label_config_edep(tmp_path):
+def test_lucid_label_config_step(tmp_path):
     root = make_lucid_sample(str(tmp_path), n_events=2)
-    ds = LUCiDDataset(data_root=root, split="", modalities=("edep", "labl"),
+    ds = LUCiDDataset(data_root=root, split="", modalities=("step", "labl"),
                       label_config=_LUCID_SEG_CONFIG)
-    edep = ds.get_data(0)["edep"]
-    assert "segment_pid" in edep and "instance_particle" in edep
-    # edep particle_idx is resolved track_idx → per_track.particle_idx; the
+    step = ds.get_data(0)["step"]
+    assert "segment_pid" in step and "instance_particle" in step
+    # step particle_idx is resolved track_idx → per_track.particle_idx; the
     # named instance_particle must equal that resolved index.
-    assert edep["instance_particle"][:, 0].tolist() == \
-        edep["particle_idx"].tolist()
+    assert step["instance_particle"][:, 0].tolist() == \
+        step["particle_idx"].tolist()
 
 
 # ---------------------------------------------------------------------------
@@ -128,10 +128,10 @@ def test_jaxtpc_label_config_named_keys(tmp_path):
              source=("track", "interaction")),
     ]
     ds = JAXTPCDataset(data_root=root, split="",
-                       modalities=("edep", "hits", "labl"),
+                       modalities=("step", "hits", "labl"),
                        dataset_name="sim", label_config=cfg)
     sample = ds.get_data(0)
-    for stream in ("edep", "hits"):
+    for stream in ("step", "hits"):
         s = sample[stream]
         assert "segment_pid" in s and "instance_interaction" in s
         # named keys are (N,1); bare segment still present (back-compat)
@@ -139,8 +139,8 @@ def test_jaxtpc_label_config_named_keys(tmp_path):
         assert "segment" in s
     # segment_pid (track_pdg axis) should equal the bare segment when
     # label_key='pdg' (the default) — same gather, different key spelling.
-    edep = sample["edep"]
-    assert edep["segment_pid"][:, 0].tolist() == edep["segment"].tolist()
+    step = sample["step"]
+    assert step["segment_pid"][:, 0].tolist() == step["segment"].tolist()
 
 
 def test_jaxtpc_label_config_self_source(tmp_path):
@@ -151,10 +151,10 @@ def test_jaxtpc_label_config_self_source(tmp_path):
     root = make_jaxtpc_sample(str(tmp_path), n_events=2, n_volumes=2)
     cfg = [dict(out="instance_particle", scope="point", source="self")]
     ds = JAXTPCDataset(data_root=root, split="",
-                       modalities=("edep", "hits", "labl"),
+                       modalities=("step", "hits", "labl"),
                        dataset_name="sim", label_config=cfg)
     sample = ds.get_data(0)
-    for stream in ("edep", "hits"):
+    for stream in ("step", "hits"):
         s = sample[stream]
         assert "instance_particle" in s                 # not silently dropped
         assert s["instance_particle"].shape == (s["coord"].shape[0], 1)
@@ -169,7 +169,7 @@ def test_jaxtpc_label_config_rejects_unsupported_specs(tmp_path):
     from pimm_data.jaxtpc import JAXTPCDataset
     from pimm_data.testing import make_jaxtpc_sample
     root = make_jaxtpc_sample(str(tmp_path), n_events=2)
-    kw = dict(data_root=root, split="", modalities=("edep", "labl"),
+    kw = dict(data_root=root, split="", modalities=("step", "labl"),
               dataset_name="sim")
     # event scope — no event-level labl table on JAXTPC
     with pytest.raises(ValueError, match="scope"):
@@ -191,9 +191,9 @@ def test_jaxtpc_label_config_default_off(tmp_path):
     from pimm_data.testing import make_jaxtpc_sample
     root = make_jaxtpc_sample(str(tmp_path), n_events=2)
     ds = JAXTPCDataset(data_root=root, split="",
-                       modalities=("edep", "labl"), dataset_name="sim")
-    edep = ds.get_data(0)["edep"]
-    assert "segment" in edep and "segment_pid" not in edep
+                       modalities=("step", "labl"), dataset_name="sim")
+    step = ds.get_data(0)["step"]
+    assert "segment" in step and "segment_pid" not in step
 
 
 def test_gather_empty_table_returns_fill_no_crash():

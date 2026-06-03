@@ -1,5 +1,5 @@
 """
-JAXTPCEdepReader — reads 3D truth energy deposits from JAXTPC edep files.
+JAXTPCStepReader — reads 3D truth energy deposits from JAXTPC step files.
 
 Produces raw geometry and physics as numpy arrays. Labels are not
 applied here — that is the dataset's responsibility (see jaxtpc.py).
@@ -15,8 +15,8 @@ from .._shard_meta import read_deposit_counts
 from ._base import ShardReaderBase
 
 
-class JAXTPCEdepReader(ShardReaderBase):
-    """Reads 3D truth deposits from JAXTPC edep HDF5 files.
+class JAXTPCStepReader(ShardReaderBase):
+    """Reads 3D truth deposits from JAXTPC step HDF5 files.
 
     Concatenates volumes into a single point cloud with a volume_id feature.
     No label computation — just raw data.
@@ -24,11 +24,11 @@ class JAXTPCEdepReader(ShardReaderBase):
     Parameters
     ----------
     data_root : str
-        Directory containing edep shard files.
+        Directory containing step shard files.
     split : str
         Split name — used as subdirectory or glob pattern.
     dataset_name : str
-        File prefix (e.g., 'sim' matches 'sim_edep_0000.h5').
+        File prefix (e.g., 'sim' matches 'sim_step_0000.h5').
     min_deposits : int
         Minimum deposits per event to include in index.
     include_physics : bool
@@ -37,7 +37,7 @@ class JAXTPCEdepReader(ShardReaderBase):
         Load only this volume index. None = all volumes.
     """
 
-    _MODALITY = 'edep'
+    _MODALITY = 'step'
 
     def __init__(self, data_root, split='train', dataset_name='sim',
                  min_deposits=0, include_physics=True, volume=None):
@@ -118,7 +118,7 @@ class JAXTPCEdepReader(ShardReaderBase):
     def _read_volume(self, vg, n, vol_idx):
         """Read physics arrays from a volume group.
 
-        Edep carries only deposit-level physics. Instance identifiers
+        Step carries only deposit-level physics. Instance identifiers
         (group_ids, deposit→group FK) live in hits; per-track metadata
         (pdg, interaction, ancestor) lives in labl.
         """

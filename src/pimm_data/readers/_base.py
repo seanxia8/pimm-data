@@ -1,6 +1,6 @@
 """Shared lifecycle for the sharded HDF5 readers (consolidation).
 
-All eight readers (jaxtpc / lucid × edep / hits / sensor / labl) index their
+All eight readers (jaxtpc / lucid × step / hits / sensor / labl) index their
 shard files identically: glob by modality, build a per-shard present-event
 index (gap-tolerant via :func:`read_shard_meta` — F6), map a global ``idx``
 through the cumulative lengths, and lazily open handles (skipping empty /
@@ -9,7 +9,7 @@ change is one edit, not eight (the structural condition that made F6 and F17
 eight-way fixes).
 
 Subclasses set :attr:`_MODALITY` and implement ``read_event``; they override
-only the genuine seams: :meth:`_index_for_shard` (the edep readers filter by
+only the genuine seams: :meth:`_index_for_shard` (the step readers filter by
 deposit / segment count) and, for the sensor reader, an extra
 :meth:`h5py_worker_init` step to capture PMT geometry.
 """
@@ -32,7 +32,7 @@ EVENT_KEY_FMT = "event_{:03d}"
 class ShardReaderBase:
     """Index/locate/open/close lifecycle shared by every shard reader."""
 
-    _MODALITY = None  # 'edep' | 'sensor' | 'hits' | 'labl'
+    _MODALITY = None  # 'step' | 'sensor' | 'hits' | 'labl'
 
     # -- construction -------------------------------------------------------
 
@@ -71,7 +71,7 @@ class ShardReaderBase:
     def _index_for_shard(self, h5_path):
         """Present event numbers for one shard (gap-tolerant — F6).
 
-        Override to filter (edep min_deposits / min_segments)."""
+        Override to filter (step min_deposits / min_segments)."""
         return read_shard_meta(h5_path)["present_events"]
 
     def _build_index(self):

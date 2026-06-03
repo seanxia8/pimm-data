@@ -2,7 +2,7 @@
 
 LUCiD has the same desync shape as JAXTPC: the dataset passed one global
 ``idx`` to every reader with ``_n_events = min(len(r))``, so ``min_segments``
-(which masks the edep reader's index only) silently misaligned edep against
+(which masks the step reader's index only) silently misaligned step against
 sensor/hits/labl. ``build_joint_index`` intersects the present events across
 modalities and injects one shared index, keeping all modalities on the same
 physics event for every idx.
@@ -10,7 +10,7 @@ physics event for every idx.
 The LUCiD readers index ``read_shard_meta(...)['present_events']`` (F6), so —
 like JAXTPC — a missing ``event_NNN`` is skipped per modality and the joint
 index intersects what each modality actually has. ``min_segments`` is the
-other desync source (it masks the edep index only).
+other desync source (it masks the step index only).
 """
 import os
 
@@ -22,7 +22,7 @@ from pimm_data.lucid import LUCiDDataset
 
 from _joint_index_helpers import readers as _readers, assert_aligned as _assert_aligned
 
-_ALL = ('edep', 'sensor', 'hits', 'labl')
+_ALL = ('step', 'sensor', 'hits', 'labl')
 
 
 def test_no_filter_all_modalities_aligned(tmp_path):
@@ -35,10 +35,10 @@ def test_no_filter_all_modalities_aligned(tmp_path):
 
 
 def test_min_segments_desync_realigns(tmp_path):
-    """min_segments drops a low-segment edep event; joint drops it everywhere."""
+    """min_segments drops a low-segment step event; joint drops it everywhere."""
     root = make_lucid_sample(str(tmp_path), n_events=3)
-    # event_001 reports 0 segments → edep filters it; others still hold it.
-    with h5py.File(os.path.join(root, 'edep', 'wc_edep_0000.h5'), 'r+') as f:
+    # event_001 reports 0 segments → step filters it; others still hold it.
+    with h5py.File(os.path.join(root, 'step', 'wc_step_0000.h5'), 'r+') as f:
         f['event_001'].attrs['n_segments'] = 0
 
     ds = LUCiDDataset(data_root=root, split='', modalities=_ALL,
@@ -73,7 +73,7 @@ def test_missing_event_group_gap_tolerant(tmp_path):
         ds.get_data(idx)
 
 
-def test_min_segments_without_edep_raises(tmp_path):
+def test_min_segments_without_step_raises(tmp_path):
     root = make_lucid_sample(str(tmp_path), n_events=2)
     with pytest.raises(ValueError, match="min_segments"):
         LUCiDDataset(data_root=root, split='', modalities=('hits', 'labl'),
@@ -82,7 +82,7 @@ def test_min_segments_without_edep_raises(tmp_path):
 
 def test_strict_lengths_raises_on_cross_modality_drop(tmp_path):
     root = make_lucid_sample(str(tmp_path), n_events=3)
-    with h5py.File(os.path.join(root, 'edep', 'wc_edep_0000.h5'), 'r+') as f:
+    with h5py.File(os.path.join(root, 'step', 'wc_step_0000.h5'), 'r+') as f:
         f['event_001'].attrs['n_segments'] = 0
     with pytest.raises(ValueError):
         LUCiDDataset(data_root=root, split='', modalities=_ALL,

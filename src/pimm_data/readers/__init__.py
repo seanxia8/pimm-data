@@ -5,21 +5,21 @@ shard files, builds an event index, and exposes ``read_event(idx)``
 returning a flat ``dict[str, np.ndarray]``.
 """
 
-from .jaxtpc_edep import JAXTPCEdepReader
+from .jaxtpc_step import JAXTPCStepReader
 from .jaxtpc_sensor import JAXTPCSensorReader
 from .jaxtpc_labl import JAXTPCLablReader
 from .jaxtpc_hits import JAXTPCHitsReader
-from .lucid_edep import LUCiDEdepReader
+from .lucid_step import LUCiDStepReader
 from .lucid_sensor import LUCiDSensorReader
 from .lucid_hits import LUCiDHitsReader
 from .lucid_labl import LUCiDLablReader
 
 __all__ = [
-    "JAXTPCEdepReader",
+    "JAXTPCStepReader",
     "JAXTPCSensorReader",
     "JAXTPCLablReader",
     "JAXTPCHitsReader",
-    "LUCiDEdepReader",
+    "LUCiDStepReader",
     "LUCiDSensorReader",
     "LUCiDHitsReader",
     "LUCiDLablReader",

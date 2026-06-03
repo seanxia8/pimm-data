@@ -168,10 +168,10 @@ class Collect(object):
 
     ``stream=`` scopes the source to ``data_dict[stream]`` before pulling
     keys. Use it to extract one stream from a nested
-    ``{'edep': {...}, 'hits': {...}}``-style dict produced by datasets
+    ``{'step': {...}, 'hits': {...}}``-style dict produced by datasets
     that emit multiple point clouds::
 
-        Collect(stream='edep', keys=['coord', 'segment'],
+        Collect(stream='step', keys=['coord', 'segment'],
                 feat_keys=['coord', 'energy'])
 
     Output keys stay bare (``coord``, ``segment``, ``feat``, …) so

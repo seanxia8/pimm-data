@@ -1,5 +1,5 @@
 """
-LUCiDEdepReader — 3D segment deposits from LUCiD ``edep/`` HDF5 files
+LUCiDStepReader — 3D segment deposits from LUCiD ``step/`` HDF5 files
 (``format_version: 3``).
 
 Each ``event_XXX`` holds per-segment arrays. One "segment" is one
@@ -27,24 +27,24 @@ import h5py
 from ._base import ShardReaderBase
 
 
-class LUCiDEdepReader(ShardReaderBase):
-    """Reads 3D segment deposits from LUCiD ``edep/`` files.
+class LUCiDStepReader(ShardReaderBase):
+    """Reads 3D segment deposits from LUCiD ``step/`` files.
 
     Parameters
     ----------
     data_root : str
-        Directory containing edep shard files.
+        Directory containing step shard files.
     split : str
         Split name (used as subdirectory when present).
     dataset_name : str
-        File prefix — matches ``{dataset_name}_edep_*.h5``.
+        File prefix — matches ``{dataset_name}_step_*.h5``.
     min_segments : int
         Drop events with fewer than this many segments.
     include_physics : bool
         Also emit ``direction``, ``beta_start``, ``n_cherenkov``.
     """
 
-    _MODALITY = 'edep'
+    _MODALITY = 'step'
 
     def __init__(self, data_root, split='', dataset_name='wc',
                  min_segments=0, include_physics=True, **kwargs):

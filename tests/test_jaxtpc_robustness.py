@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from pimm_data.testing import make_jaxtpc_sample
-from pimm_data.readers.jaxtpc_edep import JAXTPCEdepReader
+from pimm_data.readers.jaxtpc_step import JAXTPCStepReader
 from pimm_data.readers.jaxtpc_hits import JAXTPCHitsReader
 
 hdf5plugin = pytest.importorskip('hdf5plugin')
@@ -41,24 +41,24 @@ def _reencode(src, dst, comp):
 def test_reader_reads_blosc_compressed(tmp_path):
     """Readers decode blosc-zstd output identically to uncompressed."""
     root = make_jaxtpc_sample(str(tmp_path / 'u'), n_events=2)
-    base = JAXTPCEdepReader(data_root=os.path.join(root, 'edep'),
+    base = JAXTPCStepReader(data_root=os.path.join(root, 'step'),
                             split='', dataset_name='sim').read_event(0)
 
     blosc = dict(hdf5plugin.Blosc(cname='zstd', clevel=4,
                                   shuffle=hdf5plugin.Blosc.SHUFFLE))
-    bdir = tmp_path / 'b' / 'edep'
+    bdir = tmp_path / 'b' / 'step'
     bdir.mkdir(parents=True)
-    _reencode(os.path.join(root, 'edep', 'sim_edep_0000.h5'),
-              str(bdir / 'sim_edep_0000.h5'), blosc)
+    _reencode(os.path.join(root, 'step', 'sim_step_0000.h5'),
+              str(bdir / 'sim_step_0000.h5'), blosc)
 
-    got = JAXTPCEdepReader(data_root=str(bdir), split='',
+    got = JAXTPCStepReader(data_root=str(bdir), split='',
                            dataset_name='sim').read_event(0)
     np.testing.assert_allclose(got['coord'], base['coord'])
     np.testing.assert_allclose(got['energy'], base['energy'])
 
 
 @pytest.mark.parametrize('modality,reader_cls', [
-    ('edep', JAXTPCEdepReader),
+    ('step', JAXTPCStepReader),
     ('hits', JAXTPCHitsReader),
 ])
 def test_reader_tolerates_missing_event(tmp_path, modality, reader_cls):
@@ -78,7 +78,7 @@ def test_reader_tolerates_missing_event(tmp_path, modality, reader_cls):
 
 
 @pytest.mark.parametrize('modality,reader_cls', [
-    ('edep', JAXTPCEdepReader),
+    ('step', JAXTPCStepReader),
     ('hits', JAXTPCHitsReader),
 ])
 def test_reader_tolerates_dangling_shard(tmp_path, modality, reader_cls):

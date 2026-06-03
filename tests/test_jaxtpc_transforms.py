@@ -26,9 +26,9 @@ def _ds(root, modalities, **kw):
 
 
 @pytest.fixture(scope='module')
-def edep_sample(jaxtpc_data_root):
-    """A 3D edep sub-dict with labels (edep.coord shape (N,3))."""
-    ds = _ds(jaxtpc_data_root, ('edep', 'labl'))
+def step_sample(jaxtpc_data_root):
+    """A 3D step sub-dict with labels (step.coord shape (N,3))."""
+    ds = _ds(jaxtpc_data_root, ('step', 'labl'))
     return ds.get_data(0)
 
 
@@ -60,56 +60,56 @@ def _run(sample, stream, transforms):
 
 # --- spatial transforms on 3D seg -----------------------------------------
 
-def test_edep_3d_normalize_coord(edep_sample):
-    out = _run(edep_sample, 'edep', [
+def test_step_3d_normalize_coord(step_sample):
+    out = _run(step_sample, 'step', [
         dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0)])
     assert np.max(np.linalg.norm(out['coord'], axis=1)) < 2.0, \
         "after scale=4000 mm, radius should be roughly bounded"
 
 
-def test_edep_3d_random_rotate(edep_sample):
-    out = _run(edep_sample, 'edep', [
+def test_step_3d_random_rotate(step_sample):
+    out = _run(step_sample, 'step', [
         dict(type='RandomRotate', angle=[-1, 1], axis='z',
              center=[0, 0, 0], p=1.0)])
-    assert out['coord'].shape == edep_sample['edep']['coord'].shape
+    assert out['coord'].shape == step_sample['step']['coord'].shape
 
 
-def test_edep_3d_random_flip(edep_sample):
-    out = _run(edep_sample, 'edep', [dict(type='RandomFlip', p=1.0)])
-    assert out['coord'].shape == edep_sample['edep']['coord'].shape
+def test_step_3d_random_flip(step_sample):
+    out = _run(step_sample, 'step', [dict(type='RandomFlip', p=1.0)])
+    assert out['coord'].shape == step_sample['step']['coord'].shape
 
 
-def test_edep_3d_random_scale(edep_sample):
-    out = _run(edep_sample, 'edep', [
+def test_step_3d_random_scale(step_sample):
+    out = _run(step_sample, 'step', [
         dict(type='RandomScale', scale=[0.9, 1.1])])
-    assert out['coord'].shape == edep_sample['edep']['coord'].shape
+    assert out['coord'].shape == step_sample['step']['coord'].shape
 
 
-def test_edep_3d_random_jitter(edep_sample):
-    out = _run(edep_sample, 'edep', [
+def test_step_3d_random_jitter(step_sample):
+    out = _run(step_sample, 'step', [
         dict(type='RandomJitter', sigma=0.01, clip=0.05)])
-    assert out['coord'].shape == edep_sample['edep']['coord'].shape
+    assert out['coord'].shape == step_sample['step']['coord'].shape
 
 
-def test_edep_3d_grid_sample(edep_sample):
-    out = _run(edep_sample, 'edep', [
+def test_step_3d_grid_sample(step_sample):
+    out = _run(step_sample, 'step', [
         dict(type='GridSample', grid_size=10.0, hash_type='fnv',
              mode='train', return_grid_coord=True)])
-    n_before = edep_sample['edep']['coord'].shape[0]
+    n_before = step_sample['step']['coord'].shape[0]
     n_after = out['coord'].shape[0]
     assert n_after <= n_before
     assert 'grid_coord' in out
 
 
-def test_edep_3d_log_transform_energy(edep_sample):
-    out = _run(edep_sample, 'edep', [
+def test_step_3d_log_transform_energy(step_sample):
+    out = _run(step_sample, 'step', [
         dict(type='LogTransform', min_val=0.01, max_val=20.0,
              keys=('energy',))])
-    assert out['energy'].shape == edep_sample['edep']['energy'].shape
+    assert out['energy'].shape == step_sample['step']['energy'].shape
 
 
-def test_edep_3d_remap_segment(edep_sample):
-    out = _run(edep_sample, 'edep', [
+def test_step_3d_remap_segment(step_sample):
+    out = _run(step_sample, 'step', [
         dict(type='RemapSegment', scheme='motif_5cls')])
     # motif_5cls has classes 0..4
     unique = np.unique(out['segment'])
@@ -117,29 +117,29 @@ def test_edep_3d_remap_segment(edep_sample):
     assert unique.min() >= -1  # -1 sentinel preserved
 
 
-def test_edep_3d_shuffle_point(edep_sample):
-    out = _run(edep_sample, 'edep', [dict(type='ShufflePoint')])
-    assert out['coord'].shape == edep_sample['edep']['coord'].shape
+def test_step_3d_shuffle_point(step_sample):
+    out = _run(step_sample, 'step', [dict(type='ShufflePoint')])
+    assert out['coord'].shape == step_sample['step']['coord'].shape
     # per-point arrays must still line up
     assert out['segment'].shape[0] == out['coord'].shape[0]
 
 
-def test_edep_3d_random_dropout(edep_sample):
-    out = _run(edep_sample, 'edep', [
+def test_step_3d_random_dropout(step_sample):
+    out = _run(step_sample, 'step', [
         dict(type='RandomDropout', dropout_ratio=0.2, dropout_application_ratio=1.0)])
-    n_before = edep_sample['edep']['coord'].shape[0]
+    n_before = step_sample['step']['coord'].shape[0]
     n_after = out['coord'].shape[0]
     assert n_after < n_before
 
 
-def test_edep_3d_positive_shift(edep_sample):
-    out = _run(edep_sample, 'edep', [dict(type='PositiveShift')])
+def test_step_3d_positive_shift(step_sample):
+    out = _run(step_sample, 'step', [dict(type='PositiveShift')])
     assert (out['coord'] >= 0).all()
 
 
-def test_edep_3d_copy(edep_sample):
+def test_step_3d_copy(step_sample):
     """Copy transform duplicates keys within a stream sub-dict."""
-    out = _run(edep_sample, 'edep', [
+    out = _run(step_sample, 'step', [
         dict(type='Copy', keys_dict={'coord': 'origin_coord'})])
     assert 'origin_coord' in out
     assert out['origin_coord'].shape == out['coord'].shape
@@ -238,12 +238,12 @@ def test_random_rotate_on_2d_fails(hits_sample):
 
 # --- full-pipeline integration for each typical recipe --------------------
 
-def test_recipe_3d_supervised_edep(jaxtpc_data_root):
+def test_recipe_3d_supervised_step(jaxtpc_data_root):
     """Canonical 3D semantic seg pipeline — the one in
-    configs/detector/_base_/jaxtpc_edep.py."""
-    ds = _ds(jaxtpc_data_root, ('edep', 'labl'),
+    configs/detector/_base_/jaxtpc_step.py."""
+    ds = _ds(jaxtpc_data_root, ('step', 'labl'),
              transform=[
-                 dict(type='ApplyToStream', stream='edep', transforms=[
+                 dict(type='ApplyToStream', stream='step', transforms=[
                      dict(type='RemapSegment', scheme='motif_5cls'),
                      dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
                      dict(type='LogTransform', min_val=0.01, max_val=20.0),
@@ -254,7 +254,7 @@ def test_recipe_3d_supervised_edep(jaxtpc_data_root):
                      dict(type='RandomFlip', p=0.5),
                  ]),
                  dict(type='ToTensor'),
-                 dict(type='Collect', stream='edep',
+                 dict(type='Collect', stream='step',
                       keys=('coord', 'grid_coord', 'segment'),
                       feat_keys=('coord', 'energy')),
              ])

@@ -2,7 +2,7 @@
 Synthetic v3 fixture generators for JAXTPC and LUCiD.
 
 The readers in :mod:`pimm_data.readers` expect a specific on-disk HDF5
-layout (four modalities per dataset: ``edep/``, ``sensor/``, ``hits/``,
+layout (four modalities per dataset: ``step/``, ``sensor/``, ``hits/``,
 ``labl/``). Real fixtures are produced by the JAXTPC and LUCiD
 simulation pipelines, but those take GPU-bound physics runs and
 gigabytes of edepsim input — overkill for exercising the reader /
@@ -19,7 +19,7 @@ rely on:
   hits.group_to_track[hits.deposit_to_group[i]]``; every per-deposit
   track id appears in ``labl.track_ids``; per-plane CSR entries
   decode to the declared ``n_pixels``.
-* **LUCiD.** Every ``edep.track_idx`` appears in
+* **LUCiD.** Every ``step.track_idx`` appears in
   ``labl.per_track.track_id``; every ``hits.particle_idx`` and
   ``labl.per_track.particle_idx`` is a valid index into the per-
   particle tables; every ``labl.per_track.ancestor`` is itself a
@@ -92,14 +92,14 @@ def make_jaxtpc_sample(outdir, dataset_name='sim', n_events=2, n_files=1,
                        stamp_source_event_idx=True):
     """Write a minimal schema-conformant JAXTPC v3 dataset.
 
-    Creates ``{outdir}/{edep,sensor,hits,labl}/{dataset_name}_{mod}_NNNN.h5``.
+    Creates ``{outdir}/{step,sensor,hits,labl}/{dataset_name}_{mod}_NNNN.h5``.
 
     ``readout_type`` is ``'wire'`` (three U/V/Y planes per volume) or
     ``'pixel'`` (single ``Pixel`` plane per volume; coord adds a pz axis).
     """
     assert readout_type in ('wire', 'pixel'), readout_type
     os.makedirs(outdir, exist_ok=True)
-    for mod in ('edep', 'sensor', 'hits', 'labl'):
+    for mod in ('step', 'sensor', 'hits', 'labl'):
         os.makedirs(os.path.join(outdir, mod), exist_ok=True)
 
     rng = np.random.default_rng(seed)
@@ -111,8 +111,8 @@ def make_jaxtpc_sample(outdir, dataset_name='sim', n_events=2, n_files=1,
             for _ in range(n_events)
         ]
         tag = f'{dataset_name}_{{mod}}_{file_idx:04d}.h5'
-        _write_jaxtpc_edep(os.path.join(outdir, 'edep',
-                                        tag.format(mod='edep')), events)
+        _write_jaxtpc_step(os.path.join(outdir, 'step',
+                                        tag.format(mod='step')), events)
         _write_jaxtpc_sensor(os.path.join(outdir, 'sensor',
                                           tag.format(mod='sensor')), events,
                              readout_type)
@@ -124,7 +124,7 @@ def make_jaxtpc_sample(outdir, dataset_name='sim', n_events=2, n_files=1,
 
     if stamp_source_event_idx:
         _stamp_source_event_idx(outdir, dataset_name,
-                                ('edep', 'sensor', 'hits', 'labl'),
+                                ('step', 'sensor', 'hits', 'labl'),
                                 n_files, n_events)
     return outdir
 
@@ -265,7 +265,7 @@ def _build_jaxtpc_plane(rng, n_groups, n_pixels_per_plane, readout_type='wire'):
     return out
 
 
-def _write_jaxtpc_edep(path, events):
+def _write_jaxtpc_step(path, events):
     with h5py.File(path, 'w') as f:
         cfg = f.create_group('config')
         cfg.attrs['n_events'] = len(events)
@@ -375,10 +375,10 @@ def make_lucid_sample(outdir, dataset_name='wc', n_events=2, n_files=1,
                       stamp_source_event_idx=True):
     """Write a minimal schema-conformant LUCiD v3 dataset.
 
-    Creates ``{outdir}/{edep,sensor,hits,labl}/{dataset_name}_{mod}_NNNN.h5``.
+    Creates ``{outdir}/{step,sensor,hits,labl}/{dataset_name}_{mod}_NNNN.h5``.
     """
     os.makedirs(outdir, exist_ok=True)
-    for mod in ('edep', 'sensor', 'hits', 'labl'):
+    for mod in ('step', 'sensor', 'hits', 'labl'):
         os.makedirs(os.path.join(outdir, mod), exist_ok=True)
 
     rng = np.random.default_rng(seed)
@@ -393,8 +393,8 @@ def make_lucid_sample(outdir, dataset_name='wc', n_events=2, n_files=1,
             for _ in range(n_events)
         ]
         tag = f'{dataset_name}_{{mod}}_{file_idx:04d}.h5'
-        _write_lucid_edep(os.path.join(outdir, 'edep',
-                                       tag.format(mod='edep')), events)
+        _write_lucid_step(os.path.join(outdir, 'step',
+                                       tag.format(mod='step')), events)
         _write_lucid_sensor(os.path.join(outdir, 'sensor',
                                          tag.format(mod='sensor')),
                             events, pmt_positions)
@@ -406,7 +406,7 @@ def make_lucid_sample(outdir, dataset_name='wc', n_events=2, n_files=1,
 
     if stamp_source_event_idx:
         _stamp_source_event_idx(outdir, dataset_name,
-                                ('edep', 'sensor', 'hits', 'labl'),
+                                ('step', 'sensor', 'hits', 'labl'),
                                 n_files, n_events)
     return outdir
 
@@ -451,7 +451,7 @@ def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
     initial_energy = rng.uniform(0.1, 10.0, size=n_tracks).astype(np.float32)
     n_cherenkov_track = rng.integers(0, 100, size=n_tracks).astype(np.int32)
 
-    # Edep — track_idx is a POSITIONAL index into the per_track table
+    # Step — track_idx is a POSITIONAL index into the per_track table
     # (row index, not the Geant4 track_id value). See
     # lucid.py::_lookup_per_track which gathers with track_idx directly.
     seg_track_idx = rng.integers(0, n_tracks, size=n_segments).astype(np.int32)
@@ -511,7 +511,7 @@ def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
     )
 
     return dict(
-        edep=dict(
+        step=dict(
             start=start, end=end, direction=direction, edep=edep,
             time=seg_time, track_idx=seg_track_idx, beta_start=beta_start,
             n_cherenkov=n_cherenkov_seg, contained=contained_seg,
@@ -542,13 +542,13 @@ def _build_lucid_event(rng, n_segments, n_hits, n_hits_entries,
     )
 
 
-def _write_lucid_edep(path, events):
+def _write_lucid_step(path, events):
     with h5py.File(path, 'w') as f:
         cfg = f.create_group('config')
         cfg.attrs['n_events'] = len(events)
         cfg.attrs['format_version'] = 5   # match real WAND (readers are version-agnostic)
         for i, evt in enumerate(events):
-            seg = evt['edep']
+            seg = evt['step']
             g = f.create_group(f'event_{i:03d}')
             g.attrs['n_segments'] = int(seg['start'].shape[0])
             g.create_dataset('start_x', data=seg['start'][:, 0])

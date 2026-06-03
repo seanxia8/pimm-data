@@ -4,7 +4,7 @@ output (``format_version: 3``).
 
 Loads from co-indexed per-modality HDF5 shards:
 
-* ``edep/``   — 3D Geant4 step deposits
+* ``step/``   — 3D Geant4 step deposits
 * ``sensor/`` — sparse PMT response (event-level aggregate of ``hits``)
 * ``hits/``   — per-particle PMT hit decomposition
 * ``labl/``   — per-event / per-particle / per-track label tables
@@ -13,7 +13,7 @@ Returns a **nested** dict: each loaded modality owns a sub-dict with
 clean, unprefixed keys::
 
     {
-      'edep':   {'coord': (N,3), 'energy': (N,1), 'time': (N,1),
+      'step':   {'coord': (N,3), 'energy': (N,1), 'time': (N,1),
                  'track_idx': (N,), 'direction': ..., 'beta_start': ...,
                  'n_cherenkov': ..., 'instance': (N,), 'segment': (N,)},
       'sensor': {'coord': (H,3), 'energy': (H,1), 'time': (H,1),
@@ -25,16 +25,16 @@ clean, unprefixed keys::
       'name': str, 'split': str,
     }
 
-Instance / segment labels (``hits`` and ``edep``) are *particle-level* by
+Instance / segment labels (``hits`` and ``step``) are *particle-level* by
 default: ``instance = particle_idx`` and ``segment = per_particle.category``.
 For coarser groupings (ancestor-level), use
 ``labl.particle.ancestor_particle_idx`` (or ``labl.track.ancestor_particle_idx``
-for edep) in a downstream transform — this is a one-line lookup, so we keep
+for step) in a downstream transform — this is a one-line lookup, so we keep
 the dataset free of grouping policy.
 
 Missing modalities have no top-level key. Two modality combinations are
 rejected: ``('labl',)`` alone, and ``('sensor', 'labl')``. ``labl`` is a
-dimension table and needs an instance-bearing modality (``edep`` or
+dimension table and needs an instance-bearing modality (``step`` or
 ``hits``) to attach to.
 
 Registered in :data:`pimm_data.DATASETS`.
@@ -45,7 +45,7 @@ import numpy as np
 from .builder import DATASETS
 from ._dataset_base import ShardEventDataset
 from ._label_decorate import decorate_labels, gather_with_fill
-from .readers.lucid_edep import LUCiDEdepReader
+from .readers.lucid_step import LUCiDStepReader
 from .readers.lucid_sensor import LUCiDSensorReader
 from .readers.lucid_hits import LUCiDHitsReader
 from .readers.lucid_labl import LUCiDLablReader
@@ -62,14 +62,14 @@ class LUCiDDataset(ShardEventDataset):
     split : str
         Split name for file discovery.
     modalities : tuple[str]
-        Any subset of ``{'edep', 'sensor', 'hits', 'labl'}``.
+        Any subset of ``{'step', 'sensor', 'hits', 'labl'}``.
         ``('labl',)`` and ``('sensor', 'labl')`` are invalid.
     dataset_name : str
-        File prefix (e.g. ``'wc'`` matches ``wc_edep_0000.h5``).
+        File prefix (e.g. ``'wc'`` matches ``wc_step_0000.h5``).
     min_segments : int
-        Drop events with fewer than this many edep segments (edep only).
+        Drop events with fewer than this many step segments (step only).
     include_physics : bool
-        Whether edep emits direction / beta_start / n_cherenkov.
+        Whether step emits direction / beta_start / n_cherenkov.
     pe_threshold : float
         Drop hits entries with ``pe <= pe_threshold`` (hits only).
     pmt_positions, pmt_positions_file : optional
@@ -99,13 +99,13 @@ class LUCiDDataset(ShardEventDataset):
         self._modalities = tuple(modalities)
         self._validate_modalities(self._modalities)
 
-        # A3: min_segments filters on edep segment counts, so it is a silent
-        # no-op without the edep modality. Fail loud instead.
-        if min_segments > 0 and 'edep' not in self._modalities:
+        # A3: min_segments filters on step segment counts, so it is a silent
+        # no-op without the step modality. Fail loud instead.
+        if min_segments > 0 and 'step' not in self._modalities:
             raise ValueError(
-                f"min_segments={min_segments} filters on edep segment counts "
-                f"but modalities={self._modalities} does not include 'edep'. "
-                "Add 'edep' to modalities or set min_segments=0.")
+                f"min_segments={min_segments} filters on step segment counts "
+                f"but modalities={self._modalities} does not include 'step'. "
+                "Add 'step' to modalities or set min_segments=0.")
 
         self._dataset_name = dataset_name
         self._min_segments = min_segments
@@ -115,14 +115,14 @@ class LUCiDDataset(ShardEventDataset):
         self._source_data_root = data_root
         self._source_split = split
 
-        self.edep_reader = None
+        self.step_reader = None
         self.sensor_reader = None
         self.hits_reader = None
         self.labl_reader = None
 
-        if 'edep' in self._modalities:
-            self.edep_reader = LUCiDEdepReader(
-                data_root=self._modality_root('edep'), split=split,
+        if 'step' in self._modalities:
+            self.step_reader = LUCiDStepReader(
+                data_root=self._modality_root('step'), split=split,
                 dataset_name=dataset_name, min_segments=min_segments,
                 include_physics=include_physics)
 
@@ -143,7 +143,7 @@ class LUCiDDataset(ShardEventDataset):
                 data_root=self._modality_root('labl'), split=split,
                 dataset_name=dataset_name)
 
-        self._canonical_reader = (self.edep_reader or self.hits_reader
+        self._canonical_reader = (self.step_reader or self.hits_reader
                                   or self.sensor_reader or self.labl_reader)
         # Phase A / D42: one joint cross-modality event index injected into
         # every reader, so a global idx maps to the SAME physics event in all
@@ -180,9 +180,9 @@ class LUCiDDataset(ShardEventDataset):
             data['hits'] = self._build_hits(
                 self.hits_reader.read_event(real_idx), labl)
 
-        if self.edep_reader is not None:
-            data['edep'] = self._build_edep(
-                self.edep_reader.read_event(real_idx), labl)
+        if self.step_reader is not None:
+            data['step'] = self._build_step(
+                self.step_reader.read_event(real_idx), labl)
 
         return data
 
@@ -247,7 +247,7 @@ class LUCiDDataset(ShardEventDataset):
                     self._label_config)
         return sub
 
-    def _build_edep(self, raw, labl):
+    def _build_step(self, raw, labl):
         """3D deposit cloud decorated with particle-level labels from labl."""
         sub = dict(raw)  # shallow copy; readers emit fresh arrays
         track_idx = sub.get('track_idx')   # guard: malformed shard may omit it

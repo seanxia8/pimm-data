@@ -37,8 +37,8 @@ from . import detector_transforms  # noqa: F401
 # is still a required *install* dep — see ADR §5 — this exposes the framework-
 # neutral reader code, not a torch-free import path.)
 from .readers import (
-    JAXTPCEdepReader, JAXTPCSensorReader, JAXTPCHitsReader, JAXTPCLablReader,
-    LUCiDEdepReader, LUCiDSensorReader, LUCiDHitsReader, LUCiDLablReader,
+    JAXTPCStepReader, JAXTPCSensorReader, JAXTPCHitsReader, JAXTPCLablReader,
+    LUCiDStepReader, LUCiDSensorReader, LUCiDHitsReader, LUCiDLablReader,
 )
 from ._joint_index import build_joint_index
 
@@ -57,15 +57,15 @@ __all__ = [
     "PILArNetH5Dataset",
     "MultiModalEventDataset",
     # readers + joint index (torch-free public surface)
-    "JAXTPCEdepReader",
+    "JAXTPCStepReader",
     "JAXTPCSensorReader",
     "JAXTPCHitsReader",
     "JAXTPCLablReader",
-    "LUCiDEdepReader",
+    "LUCiDStepReader",
     "LUCiDSensorReader",
     "LUCiDHitsReader",
     "LUCiDLablReader",
     "build_joint_index",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

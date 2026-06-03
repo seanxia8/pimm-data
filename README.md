@@ -4,8 +4,8 @@ Multimodal detector dataset loaders for particle-imaging ML workflows.
 
 Reads simulation output produced by:
 
-- **JAXTPC** — Liquid Argon TPC simulation (`edep` / `sensor` / `hits` / `labl` HDF5)
-- **LUCiD** — Water Cherenkov / PhotonSim simulation (`edep` / `sensor` / `hits` / `labl` HDF5, `format_version >= 3`)
+- **JAXTPC** — Liquid Argon TPC simulation (`step` / `sensor` / `hits` / `labl` HDF5)
+- **LUCiD** — Water Cherenkov / PhotonSim simulation (`step` / `sensor` / `hits` / `labl` HDF5, `format_version >= 3`)
 
 Datasets inherit from `torch.utils.data.Dataset` and return nested
 `dict[str, dict[str, np.ndarray]]` samples (one sub-dict per modality).
@@ -23,9 +23,9 @@ pip install -e /path/to/pimm-data
 ```python
 from pimm_data import JAXTPCDataset
 
-ds = JAXTPCDataset(data_root="/path/to/jaxtpc_data", split="", modalities=("edep", "labl"))
+ds = JAXTPCDataset(data_root="/path/to/jaxtpc_data", split="", modalities=("step", "labl"))
 sample = ds.get_data(0)          # numpy arrays, no transforms
-print(sample["edep"].keys())     # coord, energy, volume_id, segment, instance, ...
+print(sample["step"].keys())     # coord, energy, volume_id, segment, instance, ...
 ```
 
 ### Load a LUCiD dataset
@@ -47,15 +47,15 @@ from pimm_data import JAXTPCDataset, collate_fn
 ds = JAXTPCDataset(
     data_root="/path/to/jaxtpc_data",
     split="",
-    modalities=("edep", "labl"),
+    modalities=("step", "labl"),
     label_key="pdg",
     transform=[
-        dict(type="ApplyToStream", stream="edep", transforms=[
+        dict(type="ApplyToStream", stream="step", transforms=[
             dict(type="RemapSegment", scheme="motif_5cls"),
             dict(type="GridSample", grid_size=0.5, mode="train",
                  return_grid_coord=True),
         ]),
-        dict(type="Collect", stream="edep",
+        dict(type="Collect", stream="step",
              keys=("coord", "grid_coord", "segment"),
              feat_keys=("coord", "energy")),
     ],
@@ -72,8 +72,8 @@ batch = next(iter(loader))
 > **`ds[idx]`** applies the full transform pipeline and returns tensors.
 
 > **`split` parameter:** JAXTPC defaults to `split='train'`, looking in
-> `data_root/edep/train/`. LUCiD defaults to `split=''`. If your files
-> sit directly in `data_root/edep/` with no split subdirectory, pass
+> `data_root/step/train/`. LUCiD defaults to `split=''`. If your files
+> sit directly in `data_root/step/` with no split subdirectory, pass
 > `split=''`.
 
 > **`label_key`** controls which labl column populates `segment`.
@@ -88,20 +88,20 @@ batch = next(iter(loader))
 
 | Modality | Meaning | Why this name |
 |----------|---------|---------------|
-| `edep`   | 3D energy deposits (one row per Geant4 simulation step) | Standard HEP abbreviation. |
+| `step`   | 3D energy deposits (one row per Geant4 simulation step) | Standard HEP abbreviation. |
 | `sensor` | Aggregated detector readout (pixels, wires, or PMTs) | What the detector measures. |
 | `hits`   | Per-particle charge attribution at sensor elements | Natural detector term ("PMT hits" in WC, "track hits" in TPC). |
 | `labl`   | Metadata dimension tables (PDG, interaction, ancestry) | Short for "labels." |
 
-These appear as directory names (`edep/`), HDF5 file tags
-(`sim_edep_0000.h5`), and top-level keys (`data['edep']`).
+These appear as directory names (`step/`), HDF5 file tags
+(`sim_step_0000.h5`), and top-level keys (`data['step']`).
 
 ### ML column names (per-point arrays inside a modality sub-dict)
 
 | Column     | Meaning | Lives inside |
 |------------|---------|-------------|
-| `segment`  | Semantic segmentation class ID per point | `data['edep']['segment']`, `data['hits']['segment']` |
-| `instance` | Instance segmentation ID per point | `data['edep']['instance']`, `data['hits']['instance']` |
+| `segment`  | Semantic segmentation class ID per point | `data['step']['segment']`, `data['hits']['segment']` |
+| `instance` | Instance segmentation ID per point | `data['step']['instance']`, `data['hits']['instance']` |
 
 `segment` and `instance` are **not** modalities — they are per-point
 label columns attached when `labl` is in the modalities tuple.
@@ -110,8 +110,8 @@ label columns attached when `labl` is in the modalities tuple.
 
 | FK array | Meaning | Scope |
 |----------|---------|-------|
-| `deposit_to_track` | Edep deposit → track ID | Per volume, in `labl` |
-| `deposit_to_group` | Edep deposit → hits group ID | Per volume, in `bridges` |
+| `deposit_to_track` | Step deposit → track ID | Per volume, in `labl` |
+| `deposit_to_group` | Step deposit → hits group ID | Per volume, in `bridges` |
 | `group_to_track`   | Hits group → track ID | Per volume, in `bridges` |
 
 All are suffixed `_v{N}` for multi-volume detectors (e.g. `deposit_to_group_v0`).
@@ -119,12 +119,12 @@ All are suffixed `_v{N}` for multi-volume detectors (e.g. `deposit_to_group_v0`)
 ### The `bridges` dict
 
 `bridges` appears as a top-level key only when `hits` is loaded
-(JAXTPC only). It holds the FK arrays linking edep, hits, and labl:
+(JAXTPC only). It holds the FK arrays linking step, hits, and labl:
 
 ```python
 data['bridges'] = {
     'group_to_track_v0':   (G0,),   # hits group_id → track_id
-    'deposit_to_group_v0': (N_v0,), # edep row → hits group_id
+    'deposit_to_group_v0': (N_v0,), # step row → hits group_id
     'qs_fractions_v0':     ...,     # charge-sharing fractions
     # ... _v1, _v2, etc.
 }
@@ -144,7 +144,7 @@ data_root / [modality_subdir/] / [split/] / {dataset_name}_{modality}_{shard:04d
 
 ```
 data_root/
-  edep/     sim_edep_0000.h5    sim_edep_0001.h5    ...
+  step/     sim_step_0000.h5    sim_step_0001.h5    ...
   sensor/   sim_sensor_0000.h5  ...
   hits/     sim_hits_0000.h5    ...
   labl/     sim_labl_0000.h5    ...
@@ -154,7 +154,7 @@ data_root/
 
 ```
 data_root/
-  edep/     wc_edep_0000.h5     ...
+  step/     wc_step_0000.h5     ...
   sensor/   wc_sensor_0000.h5   ...
   hits/     wc_hits_0000.h5     ...
   labl/     wc_labl_0000.h5     ...
@@ -190,13 +190,13 @@ Each modality produces a sub-dict at a top-level key of the same name.
 
 | Modality | Contains | Point-cloud dim |
 |---|---|---|
-| `edep`   | 3D truth deposits (one row per Geant4 step) | 3D |
+| `step`   | 3D truth deposits (one row per Geant4 step) | 3D |
 | `sensor` | Raw sparse detector response | 2D (wire), 3D (pixel, PMT) |
 | `hits`   | Per-particle decomposition of `sensor` | same as `sensor` |
 | `labl`   | Dimension tables: per-track metadata | — |
 
 `labl` has no point cloud — it attaches `segment` and `instance`
-columns to an instance-bearing modality (`edep` or `hits`). Two
+columns to an instance-bearing modality (`step` or `hits`). Two
 combinations are rejected:
 
 - `('labl',)` — nothing to join against.
@@ -212,7 +212,7 @@ combinations are rejected:
 data = ds.get_data(idx)
 # {
 #     'name': str, 'split': str,
-#     'edep':    {...},    # when 'edep' in modalities
+#     'step':    {...},    # when 'step' in modalities
 #     'sensor':  {...},    # when 'sensor' in modalities
 #     'hits':    {...},    # when 'hits' in modalities
 #     'labl':    {...},    # when 'labl' in modalities
@@ -226,7 +226,7 @@ JAXTPC supports two readout types (auto-detected from HDF5):
 **wire** (U/V/Y planes, coord is `(M, 2)`) and **pixel** (coord is `(M, 3)`).
 
 ```python
-data['edep'] = {
+data['step'] = {
     'coord':     (N, 3) float32,
     'energy':    (N, 1) float32,
     'volume_id': (N, 1) int32,
@@ -276,7 +276,7 @@ data['bridges'] = {           # only when 'hits' is loaded
 ### LUCiD sub-dicts
 
 ```python
-data['edep'] = {
+data['step'] = {
     'coord':       (N, 3) float32,    # midpoint of Geant4 step
     'energy':      (N, 1) float32,
     'time':        (N, 1) float32,
@@ -328,7 +328,7 @@ need per-vertex grouping.
 
 | Dataset | Modality | `instance` = |
 |---------|----------|-------------|
-| JAXTPC  | `edep`   | `track_id` (raw Geant4 track ID) |
+| JAXTPC  | `step`   | `track_id` (raw Geant4 track ID) |
 | JAXTPC  | `hits`   | `group_id` (hits' native grouping) |
 | LUCiD   | both     | `particle_idx` (FK into labl.particle) |
 
@@ -355,8 +355,8 @@ The dataset returns a nested dict → transforms process it →
 `Collect` extracts a flat dict for the model.
 
 ```
-get_data()  →  ApplyToStream(stream='edep', transforms=[...])  →  Collect(stream='edep', ...)
-nested dict       augments edep sub-dict (numpy)                    flat dict (tensors)
+get_data()  →  ApplyToStream(stream='step', transforms=[...])  →  Collect(stream='step', ...)
+nested dict       augments step sub-dict (numpy)                    flat dict (tensors)
 ```
 
 ### ApplyToStream
@@ -366,7 +366,7 @@ operate on numpy. If the stream is missing, the transform is a no-op
 (pass `required=True` to raise instead).
 
 ```python
-dict(type='ApplyToStream', stream='edep', transforms=[
+dict(type='ApplyToStream', stream='step', transforms=[
     dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
     dict(type='GridSample', grid_size=0.001, mode='train',
          return_grid_coord=True),
@@ -379,7 +379,7 @@ Terminal transform. Extracts keys from a stream, auto-converts numpy
 to torch tensors, and builds the `offset` key for batching.
 
 ```python
-dict(type='Collect', stream='edep',
+dict(type='Collect', stream='step',
      keys=('coord', 'grid_coord', 'segment'),
      feat_keys=('coord', 'energy'))
 # Output: {coord, grid_coord, segment, feat, offset, name, split}
@@ -390,33 +390,33 @@ This also enables efficient `DataLoader` parallelism (see below).
 
 ### Practical configs
 
-**SSL on 3D edep (no labels):**
+**SSL on 3D step (no labels):**
 
 ```python
 transform=[
-    dict(type='ApplyToStream', stream='edep', transforms=[
+    dict(type='ApplyToStream', stream='step', transforms=[
         dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
         dict(type='GridSample', grid_size=0.001, mode='train',
              return_grid_coord=True),
         dict(type='ShufflePoint'),
     ]),
-    dict(type='Collect', stream='edep',
+    dict(type='Collect', stream='step',
          keys=('coord', 'grid_coord'),
          feat_keys=('coord', 'energy')),
 ]
 ```
 
-**Supervised segmentation (edep + labl):**
+**Supervised segmentation (step + labl):**
 
 ```python
 transform=[
-    dict(type='ApplyToStream', stream='edep', transforms=[
+    dict(type='ApplyToStream', stream='step', transforms=[
         dict(type='RemapSegment', scheme='motif_5cls'),
         dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
         dict(type='GridSample', grid_size=0.001, mode='train',
              return_grid_coord=True),
     ]),
-    dict(type='Collect', stream='edep',
+    dict(type='Collect', stream='step',
          keys=('coord', 'grid_coord', 'segment'),
          feat_keys=('coord', 'energy')),
 ]
@@ -447,7 +447,7 @@ transform=[
 from torch.utils.data import DataLoader
 from pimm_data import JAXTPCDataset, collate_fn
 
-ds = JAXTPCDataset(data_root="...", modalities=("edep", "labl"),
+ds = JAXTPCDataset(data_root="...", modalities=("step", "labl"),
                    label_key="pdg", transform=[...])
 loader = DataLoader(ds, batch_size=4, num_workers=4,
                     collate_fn=collate_fn, pin_memory=True)
@@ -557,8 +557,8 @@ batch['offset']         # tensor([N0, N0+N1, N0+N1+N2, ...])
 |---|---|---|---|
 | `data_root` | str | *(required)* | Root directory with modality subdirectories |
 | `split` | str | `'train'` | Split subdirectory. Pass `''` for flat layouts. |
-| `modalities` | tuple | `('edep',)` | Subset of `'edep'`, `'sensor'`, `'hits'`, `'labl'` |
-| `dataset_name` | str | `'sim'` | File prefix (matches `sim_edep_*.h5`) |
+| `modalities` | tuple | `('step',)` | Subset of `'step'`, `'sensor'`, `'hits'`, `'labl'` |
+| `dataset_name` | str | `'sim'` | File prefix (matches `sim_step_*.h5`) |
 | `volume` | int/None | `None` | Single-volume filter. `None` = all volumes. |
 | `label_key` | str | `'pdg'` | Labl column for `segment`: `'pdg'`, `'cluster'`, `'interaction'`, `'ancestor'` |
 | `min_deposits` | int | `0` | Drop events with fewer deposits |
@@ -574,9 +574,9 @@ batch['offset']         # tensor([N0, N0+N1, N0+N1+N2, ...])
 |---|---|---|---|
 | `data_root` | str | *(required)* | Root directory with modality subdirectories |
 | `split` | str | `''` | Split subdirectory (default: no split) |
-| `modalities` | tuple | `('sensor',)` | Subset of `'edep'`, `'sensor'`, `'hits'`, `'labl'` |
+| `modalities` | tuple | `('sensor',)` | Subset of `'step'`, `'sensor'`, `'hits'`, `'labl'` |
 | `dataset_name` | str | `'wc'` | File prefix (matches `wc_sensor_*.h5`) |
-| `min_segments` | int | `0` | Drop events with fewer edep segments |
+| `min_segments` | int | `0` | Drop events with fewer step segments |
 | `include_physics` | bool | `True` | Load direction, beta_start, n_cherenkov |
 | `pe_threshold` | float | `0.0` | Drop hits entries with PE ≤ threshold |
 | `transform` | list/None | `None` | List of transform dicts |
@@ -619,7 +619,7 @@ classes (shower/track/michel/delta/led).
 
 ```python
 from pimm_data import build_dataset
-ds = build_dataset(dict(type='JAXTPCDataset', data_root='...', modalities=('edep',)))
+ds = build_dataset(dict(type='JAXTPCDataset', data_root='...', modalities=('step',)))
 ```
 
 ---
@@ -663,7 +663,7 @@ JAXTPC_PIXEL_DATA_ROOT=/path/to/jaxtpc_pixel pytest tests/test_jaxtpc_pixel.py
 ```
 
 The conftest validates that the override directory has the v3 layout
-(`edep/`, `sensor/`, `hits/`, `labl/` subdirs); incomplete overrides
+(`step/`, `sensor/`, `hits/`, `labl/` subdirs); incomplete overrides
 skip with a descriptive reason.
 
 Tests that only make sense on real production data carry
@@ -684,7 +684,7 @@ The canonical real LUCiD-format dataset at SLAC is the WAND SK-like sample —
   config_000018/  pile-up 2 × bomb
 ```
 
-Each `config_NNNNNN/` is a v3 root with `edep/`, `sensor/`, `hits/`, `labl/`
+Each `config_NNNNNN/` is a v3 root with `step/`, `sensor/`, `hits/`, `labl/`
 (`wc_*_NNNN.h5`, `format_version 5`) — point `LUCID_DATA_ROOT` straight at one
 config; no mirror or symlink staging is needed. (Per-config shard counts are
 regenerated over time, so they are not pinned here.)
@@ -706,7 +706,7 @@ Typical runtimes (Sherlock-class shared FS, warm cache):
 | Full 18-config sweep (sequential)        | ~10 min   |
 | Full 18-config sweep (parallel -j6)      | ~75 s     |
 
-The largest single-config cost (`test_edep_min_segments_filter`) walks
+The largest single-config cost (`test_step_min_segments_filter`) walks
 every event's `n_segments` attribute to build a filter index — that
 scales with total events, not with file count, and dominates large
 configs.

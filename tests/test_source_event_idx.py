@@ -12,7 +12,7 @@ from pimm_data._shard_meta import read_shard_meta, clear_cache
 def test_jaxtpc_fixture_stamps_source_event_idx(tmp_path):
     clear_cache()
     root = make_jaxtpc_sample(str(tmp_path), n_events=3, n_files=2)
-    for mod in ('edep', 'sensor', 'hits', 'labl'):
+    for mod in ('step', 'sensor', 'hits', 'labl'):
         for fi in range(2):
             meta = read_shard_meta(
                 os.path.join(root, mod, f'sim_{mod}_{fi:04d}.h5'))

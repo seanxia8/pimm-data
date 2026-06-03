@@ -6,7 +6,7 @@ dataset that passes one ``idx`` to every reader (with ``_n_events =
 min(len(r))``) is only correct if every reader holds the SAME ordered list of
 physics events. It does not, whenever the present-event sets diverge:
 
-* an edep event filter (``min_deposits`` / ``min_segments``) masks the edep
+* an step event filter (``min_deposits`` / ``min_segments``) masks the step
   reader's index but not the others;
 * a production gap (a skipped ``event_NNN``) is present in some modalities but
   not others.
@@ -87,7 +87,7 @@ def build_joint_index(named_readers, *, strict_lengths=False,
     total = int(cum[-1]) if len(cum) else 0
 
     # A4: surface any event dropped to keep modalities aligned. Expected under
-    # an edep event filter; otherwise it flags a real cross-modality gap.
+    # an step event filter; otherwise it flags a real cross-modality gap.
     if any(t != total for t in raw_totals.values()):
         extra = f" (or filtered by {filter_label})" if filter_label else ""
         msg = (f"{source_label}: joint cross-modality index = {total} events; "

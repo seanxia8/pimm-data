@@ -42,6 +42,9 @@ from .readers import (
 )
 from ._joint_index import build_joint_index
 
+# Plane-geometry registry (loaded from a JAXTPC-exported config JSON)
+from .geometry import load_plane_registry, dataset_geometry_kwargs
+
 # Post-collate, on-device batch transforms (the dense GPU path runner)
 from . import dense_ops  # noqa: F401
 from .batch_transforms import (
@@ -82,6 +85,8 @@ __all__ = [
     "move_to_device",
     "content_seed",
     "BatchTransformMixin",
+    "load_plane_registry",
+    "dataset_geometry_kwargs",
 ]
 
 __version__ = "0.3.0"

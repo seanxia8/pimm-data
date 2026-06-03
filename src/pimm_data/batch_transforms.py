@@ -1,0 +1,202 @@
+"""
+Post-collate, on-device batch transforms — the runner pimm-data owns.
+
+Workers stay CPU/sparse; the dense path runs here, once per batch, in the main
+process. ``apply_batch_transforms`` moves the (sparse) batch to the device
+(idempotent) and runs an ordered list of stages on the collated tensors; the
+dense grids are born on-device. Device-agnostic: pass ``device='cpu'`` to run the
+exact same stages on CPU (tests / no-GPU). This module imports ``torch`` but never
+``torch.cuda``.
+
+Stages take ``(batch, *, seeds)`` and mutate/return the batch dict:
+
+* ``BatchDensify``      — sparse ``wire/time/value/plane_gid/offset`` -> ``batch[dense_key]={gid:(B,W,T)}``
+* ``BatchAddIntrinsicNoise`` — fresh coherent (+optional incoherent) noise per event
+* ``BatchDigitize``     — quantize to ADC codes
+
+Seeds are **content-addressed** per event (``blake2b(name) ^ base_seed ^ epoch ^
+rank``), so the same event gets the same noise regardless of **batch position,
+worker, or resume**. Caveats: ``rank`` is folded in to decorrelate DDP replicas,
+so changing ``world_size`` (which re-partitions events across ranks) changes the
+realization; and the **incoherent** component draws on a torch ``Generator`` whose
+CPU and CUDA streams differ for the same seed, so incoherent realizations are
+**device-specific** (coherent uses a numpy Generator and is device-independent /
+bit-exact to JAXTPC). Geometry comes from a registry (e.g.
+``JAXTPCDataset.plane_geometry()``) passed to the stages — not carried per-sample
+through collate.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import warnings
+
+import torch
+
+from . import dense_ops
+from .noise import (DEFAULT_ENC, DEFAULT_SAMPLING_RATE_HZ, DEFAULT_GROUP_SIZE,
+                    DEFAULT_COH_RMS_ADC, DEFAULT_COH_CORNER_FREQ_HZ,
+                    DEFAULT_COH_SLOPE, DEFAULT_COH_BETA)
+
+
+# ── device move (idempotent) ──────────────────────────────────────────────
+def move_to_device(batch, device, non_blocking=True):
+    """Recursively move tensors to ``device``; non-tensors untouched.
+
+    Idempotent — a tensor already on ``device`` is returned by ``.to`` without a
+    copy. Use ``DataLoader(pin_memory=True)`` for ``non_blocking`` to be truly async.
+    """
+    if isinstance(batch, torch.Tensor):
+        return batch.to(device, non_blocking=non_blocking)
+    if isinstance(batch, dict):
+        return {k: move_to_device(v, device, non_blocking) for k, v in batch.items()}
+    if isinstance(batch, (list, tuple)):
+        return type(batch)(move_to_device(v, device, non_blocking) for v in batch)
+    return batch
+
+
+# ── content-addressed seeding ─────────────────────────────────────────────
+def content_seed(event_name, base_seed=0, epoch=0, rank=0):
+    """Stable per-event seed: same event -> same noise across batch/worker/resume."""
+    payload = f"{event_name}|{int(base_seed)}|{int(epoch)}|{int(rank)}".encode()
+    h = hashlib.blake2b(payload, digest_size=8).digest()
+    return int.from_bytes(h, 'little') & ((1 << 63) - 1)
+
+
+def _batch_seeds(batch, base_seed, epoch, rank, n):
+    names = batch.get('name')
+    if isinstance(names, str):
+        names = [names]
+    if not names:
+        # No per-event id -> we cannot content-address. A position-based fallback
+        # is NOT reproducible across shuffles/runs, so warn loudly rather than
+        # silently give wrong reproducibility.
+        warnings.warn(
+            "AddNoise: batch has no 'name' -> seeding falls back to batch "
+            "position, which is NOT reproducible across shuffles/epochs/runs. "
+            "Ensure Collect passes 'name' through.", RuntimeWarning, stacklevel=2)
+        names = [f"_idx{i}" for i in range(n)]
+    return [content_seed(nm, base_seed, epoch, rank) for nm in names]
+
+
+def _batch_size(batch, offset_key='offset'):
+    off = batch.get(offset_key)
+    if off is not None:
+        return int(off.numel())
+    return 1
+
+
+# ── stages ─────────────────────────────────────────────────────────────────
+class BatchDensify:
+    """Sparse hits -> per-plane dense grids ``batch[dense_key] = {gid: (B,W,T)}``."""
+
+    def __init__(self, geom, *, wire_key='wire', time_key='time', value_key='value',
+                 plane_key='plane_gid', offset_key='offset', dense_key='sensor_dense'):
+        self.geom = geom
+        self.wire_key, self.time_key, self.value_key = wire_key, time_key, value_key
+        self.plane_key, self.offset_key, self.dense_key = plane_key, offset_key, dense_key
+
+    def __call__(self, batch, *, seeds=None):
+        batch[self.dense_key] = dense_ops.densify(
+            batch[self.wire_key], batch[self.time_key], batch[self.value_key],
+            batch[self.plane_key], batch[self.offset_key], self.geom)
+        return batch
+
+
+class BatchAddIntrinsicNoise:
+    """Add fresh per-event coherent (+optional incoherent) noise to the grids."""
+
+    def __init__(self, geom, *, coherent=True, incoherent=False,
+                 dense_key='sensor_dense', enc=DEFAULT_ENC,
+                 sampling_rate_hz=DEFAULT_SAMPLING_RATE_HZ,
+                 group_size=DEFAULT_GROUP_SIZE, coh_rms=DEFAULT_COH_RMS_ADC,
+                 coh_corner_freq_hz=DEFAULT_COH_CORNER_FREQ_HZ,
+                 coh_spectral_slope=DEFAULT_COH_SLOPE, beta=DEFAULT_COH_BETA,
+                 series_spectrum=None):
+        self.geom = geom
+        self.coherent, self.incoherent = bool(coherent), bool(incoherent)
+        self.dense_key = dense_key
+        self.enc = tuple(enc)
+        self.kw = dict(sampling_rate_hz=sampling_rate_hz, group_size=group_size,
+                       coh_rms=coh_rms, coh_corner_freq_hz=coh_corner_freq_hz,
+                       coh_spectral_slope=coh_spectral_slope, beta=beta,
+                       series_spectrum=series_spectrum)
+
+    def __call__(self, batch, *, seeds):
+        dense_ops.add_intrinsic_noise(
+            batch[self.dense_key], self.geom, seeds=seeds, enc=self.enc,
+            coherent=self.coherent, incoherent=self.incoherent, **self.kw)
+        return batch
+
+
+class BatchDigitize:
+    """Quantize per-plane grids to ADC codes (pedestal from registry or override)."""
+
+    def __init__(self, geom=None, *, pedestal=None, n_bits=12, adc_max=None,
+                 gain=1.0, dense_key='sensor_dense'):
+        self.geom = geom or {}
+        self.pedestal = pedestal
+        self.n_bits, self.adc_max, self.gain = n_bits, adc_max, gain
+        self.dense_key = dense_key
+
+    def __call__(self, batch, *, seeds=None):
+        ped = self.pedestal
+        if ped is None:
+            ped = {gid: e.get('pedestal', 0) for gid, e in self.geom.items()}
+        batch[self.dense_key] = dense_ops.digitize(
+            batch[self.dense_key], ped, n_bits=self.n_bits,
+            adc_max=self.adc_max, gain=self.gain)
+        return batch
+
+
+def build_sensor_gpu_stages(geom, *, coherent=True, incoherent=False, digitize=True,
+                            n_bits=12, dense_key='sensor_dense', **noise_kw):
+    """Convenience: the standard Densify -> AddNoise -> Digitize stage list.
+
+    ``geom`` is a canonical-plane-id registry (e.g. ``JAXTPCDataset.plane_geometry()``).
+    """
+    stages = [BatchDensify(geom, dense_key=dense_key),
+              BatchAddIntrinsicNoise(geom, coherent=coherent, incoherent=incoherent,
+                                     dense_key=dense_key, **noise_kw)]
+    if digitize:
+        stages.append(BatchDigitize(geom, n_bits=n_bits, dense_key=dense_key))
+    return stages
+
+
+# ── runner ──────────────────────────────────────────────────────────────────
+def apply_batch_transforms(batch, stages, *, device=None, base_seed=0, epoch=0,
+                           rank=0, offset_key='offset'):
+    """Move the batch to ``device`` (idempotent), then run ``stages`` on-device.
+
+    ``stages`` empty -> just the move (byte-equivalent to a plain ``.to(device)``
+    loop). Per-event seeds are derived from ``batch['name']`` + ``base_seed/epoch/rank``.
+    """
+    if device is not None:
+        batch = move_to_device(batch, device)
+    if not stages:
+        return batch
+    seeds = _batch_seeds(batch, base_seed, epoch, rank, _batch_size(batch, offset_key))
+    for stage in stages:
+        batch = stage(batch, seeds=seeds)
+    return batch
+
+
+class BatchTransformMixin:
+    """Mixin for a LightningModule: run the stages in ``on_after_batch_transfer``.
+
+    Set ``self.batch_stages`` (from :func:`build_sensor_gpu_stages`) and
+    ``self.base_seed``. Lightning calls this with the batch already on-device, so
+    ``device=None`` (no move). For a custom (non-Lightning) loop, call
+    :func:`apply_batch_transforms` inline after the ``.to(device)`` instead.
+    """
+
+    batch_stages: list = []
+    base_seed: int = 0
+
+    def on_after_batch_transfer(self, batch, dataloader_idx=0):
+        trainer = getattr(self, 'trainer', None)
+        epoch = getattr(trainer, 'current_epoch', 0) or 0
+        rank = getattr(trainer, 'global_rank', 0) or 0
+        return apply_batch_transforms(
+            batch, self.batch_stages, device=None,
+            base_seed=self.base_seed, epoch=epoch, rank=rank)

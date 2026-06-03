@@ -146,6 +146,9 @@ def index_operator(data_dict, index, duplicate=False):
     if data_dict.get("revision") == "v3" and "is_primary" in data_dict \
             and "is_primary" not in data_dict["index_valid_keys"]:
         data_dict["index_valid_keys"].append("is_primary")
+    # plane_id (per-point sparse plane label) is carried via _INDEX_PER_POINT_KEYS;
+    # wire/time/value/plane_gid (dense-path scatter inputs) are intentionally not
+    # subset — densify consumes them as immutable raw COO.
     _augment_index_valid_keys(data_dict)
     if not duplicate:
         for key in data_dict["index_valid_keys"]:

@@ -42,6 +42,16 @@ from .readers import (
 )
 from ._joint_index import build_joint_index
 
+# Post-collate, on-device batch transforms (the dense GPU path runner)
+from . import dense_ops  # noqa: F401
+from .batch_transforms import (
+    apply_batch_transforms,
+    build_sensor_gpu_stages,
+    move_to_device,
+    content_seed,
+    BatchTransformMixin,
+)
+
 __all__ = [
     "Registry",
     "build_from_cfg",
@@ -66,6 +76,12 @@ __all__ = [
     "LUCiDHitsReader",
     "LUCiDLablReader",
     "build_joint_index",
+    # post-collate dense GPU transform path
+    "apply_batch_transforms",
+    "build_sensor_gpu_stages",
+    "move_to_device",
+    "content_seed",
+    "BatchTransformMixin",
 ]
 
 __version__ = "0.3.0"

@@ -53,6 +53,41 @@ from .readers.jaxtpc_hits import JAXTPCHitsReader
 
 log = logging.getLogger(__name__)
 
+# Wire-readout plane types, in canonical order. A plane label is
+# ``volume_{v}_{T}`` (T in _PLANE_TYPES) or ``volume_{v}_Pixel``.
+_PLANE_TYPES = ('U', 'V', 'Y')
+
+
+def canonical_plane_id(label):
+    """Stable, file-independent global id for a plane label.
+
+    ``volume_{v}_{U|V|Y}`` -> ``v * 3 + {U:0,V:1,Y:2}``; ``volume_{v}_Pixel`` -> ``v``.
+    Unlike the per-event positional ``plane_id`` (a dense index into the planes
+    present *in that event*), this never shifts when a plane is empty or under
+    ``volume=`` filtering, so a downstream densify can key per-plane grids/geometry
+    by it consistently across a batch.
+    """
+    parts = label.split('_')
+    if len(parts) != 3 or parts[0] != 'volume':
+        raise ValueError(
+            f"canonical_plane_id: expected a 'volume_{{v}}_{{U|V|Y|Pixel}}' label, "
+            f"got {label!r}")
+    try:
+        v = int(parts[1])
+    except ValueError:
+        raise ValueError(f"canonical_plane_id: non-integer volume in {label!r}")
+    t = parts[2]
+    if t == 'Pixel':
+        # NOTE: pixel ids share the integer space with wire ids by volume; the
+        # dense path is wire-only (plane_geometry() returns {} for pixel), so a
+        # mixed wire+pixel registry is unsupported.
+        return v
+    if t not in _PLANE_TYPES:
+        raise ValueError(
+            f"canonical_plane_id: unknown plane type {t!r} in {label!r} "
+            f"(expected one of {_PLANE_TYPES} or 'Pixel')")
+    return v * len(_PLANE_TYPES) + _PLANE_TYPES.index(t)
+
 
 @DATASETS.register_module()
 class JAXTPCDataset(ShardEventDataset):
@@ -108,9 +143,19 @@ class JAXTPCDataset(ShardEventDataset):
         max_len=-1,
         ignore_index=-1,
         strict_lengths=False,
+        cache=False,
+        num_time_steps=None,
+        n_wires_per_plane=None,
+        pedestal_per_plane=None,
+        wire_lengths_per_plane=None,
     ):
         self._modalities = tuple(modalities)
         self._validate_modalities(self._modalities)
+        # Per-plane wire lengths (METERS) for incoherent-noise ENC, keyed by
+        # plane TYPE ('U'/'V'/'Y') or full label, value an (n_wires,) array or a
+        # (lo, hi) pair expanded via linspace. Detector geometry — not in the
+        # file — so it is config, surfaced through plane_geometry().
+        self._wire_lengths_per_plane = dict(wire_lengths_per_plane or {})
 
         # A3: min_deposits filters on step deposit counts, so it is a no-op
         # (and silently so) without the step modality. Fail loud instead.
@@ -150,7 +195,10 @@ class JAXTPCDataset(ShardEventDataset):
         if 'sensor' in self._modalities:
             self.sensor_reader = JAXTPCSensorReader(
                 data_root=self._modality_root('sensor'), split=split,
-                dataset_name=dataset_name, planes='all')
+                dataset_name=dataset_name, planes='all',
+                n_wires_per_plane=n_wires_per_plane,
+                num_time_steps=num_time_steps,
+                pedestal_per_plane=pedestal_per_plane)
 
         if 'labl' in self._modalities:
             self.labl_reader = JAXTPCLablReader(
@@ -239,6 +287,9 @@ class JAXTPCDataset(ShardEventDataset):
         if self.sensor_reader is not None:
             data['sensor'] = self._build_sensor_cloud(
                 self.sensor_reader.read_event(real_idx))
+            # Surface the event id for transforms that need a stable per-event
+            # seed (e.g. AddNoise) while scoped to the sensor sub-dict.
+            data['sensor']['name'] = data['name']
 
         if self.step_reader is not None:
             data['step'] = self._build_step_cloud(
@@ -277,11 +328,93 @@ class JAXTPCDataset(ShardEventDataset):
         planes, coord, energy, plane_id, raw = self._merge_plane_dotted(
             sensor_raw, prefix='sensor', value_key='value',
             coord_keys=coord_keys)
-        return {
+        sub = {
             'coord': coord, 'energy': energy, 'plane_id': plane_id,
             'planes': planes, 'raw': raw,
             'readout_type': self._readout_type,
         }
+        # Per-plane fixed grid extent for a downstream Densify, from the reader's
+        # surfaced geometry. Wire readout only; absent when geometry is unknown
+        # (Densify then errors unless require_shape=False). Pedestal (raw-ADC
+        # offset) is surfaced alongside for a downstream Digitize.
+        if self._readout_type != 'pixel' and self.sensor_reader is not None:
+            nts = getattr(self.sensor_reader, 'num_time_steps', None)
+            nwbp = getattr(self.sensor_reader, 'n_wires_per_plane', {})
+            shape = {p: (int(nwbp[p]), int(nts)) for p in planes
+                     if p in nwbp and nts is not None}
+            if shape:
+                sub['shape'] = shape
+            pbp = getattr(self.sensor_reader, 'pedestal_per_plane', {})
+            pedestal = {p: int(pbp[p]) for p in planes if p in pbp}
+            if pedestal:
+                sub['pedestal'] = pedestal
+            # Flat integer scatter inputs for the dense path (a downstream
+            # Collect(into='sensor') pulls these; densify scatters them).
+            # coord/energy are float32 but wire/time are small exact integers.
+            if planes:
+                sub['wire'] = coord[:, 0].astype(np.int32)
+                sub['time'] = coord[:, 1].astype(np.int32)
+                sub['value'] = energy[:, 0].astype(np.float32)
+                # canonical (stable) plane id per point, parallel to the
+                # positional plane_id (which is left unchanged for back-compat)
+                gid_of_pos = np.array([canonical_plane_id(p) for p in planes],
+                                      dtype=np.int32)
+                sub['plane_gid'] = gid_of_pos[plane_id[:, 0]].astype(np.int32)
+        return sub
+
+    def _wire_lengths_for(self, label, n_wires):
+        """Per-wire lengths (m) for a plane: (n_wires,) array, or (lo,hi)->linspace."""
+        ptype = label.split('_')[-1]
+        spec = self._wire_lengths_per_plane.get(
+            label, self._wire_lengths_per_plane.get(ptype))
+        if spec is None:
+            return None
+        arr = np.asarray(spec, dtype=np.float32)
+        if arr.ndim == 1 and arr.shape[0] == n_wires:
+            return arr
+        if arr.size == 2:
+            return np.linspace(float(arr.flat[0]), float(arr.flat[1]),
+                               n_wires, dtype=np.float32)
+        raise ValueError(
+            f"wire_lengths for {label!r}: expected ({n_wires},) array or "
+            f"(lo, hi) pair, got shape {arr.shape}")
+
+    def plane_geometry(self):
+        """Canonical-plane-id -> geometry registry for the dense path.
+
+        Returns ``{gid: {'n_wires', 'n_ticks', 'pedestal', ['wire_lengths']}}``
+        built from the sensor reader's file-surfaced geometry plus the
+        ``wire_lengths_per_plane`` config. Geometry is sourced HERE (the registry),
+        not carried per-sample through collate; the post-collate densify/noise
+        stages take this dict. ``wire_lengths`` is present only when configured
+        (the incoherent-noise stage requires it; densify/coherent/digitize do not).
+        Note the reader populates ``n_wires_per_plane`` lazily — read at least one
+        event (or build after indexing) before relying on this.
+        """
+        if self.sensor_reader is None or self._readout_type == 'pixel':
+            return {}
+        # the reader fills n_wires_per_plane lazily on read; populate it if this
+        # is called before the loader has iterated (e.g. trainer before_train).
+        if not getattr(self.sensor_reader, 'n_wires_per_plane', {}):
+            try:
+                self.sensor_reader.read_event(0)
+            except Exception:
+                pass
+        nts = getattr(self.sensor_reader, 'num_time_steps', None)
+        nwbp = getattr(self.sensor_reader, 'n_wires_per_plane', {})
+        pbp = getattr(self.sensor_reader, 'pedestal_per_plane', {})
+        geom = {}
+        for label, nw in nwbp.items():
+            entry = {'n_wires': int(nw)}
+            if nts is not None:
+                entry['n_ticks'] = int(nts)
+            if label in pbp:
+                entry['pedestal'] = int(pbp[label])
+            wl = self._wire_lengths_for(label, int(nw))
+            if wl is not None:
+                entry['wire_lengths'] = wl
+            geom[canonical_plane_id(label)] = entry
+        return geom
 
     def _build_hits_cloud(self, hits_raw, labl_by_volume):
         """Merge per-plane hits raw into a point cloud + raw passthrough.

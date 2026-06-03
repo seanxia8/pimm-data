@@ -33,19 +33,40 @@ class JAXTPCSensorReader(JAXTPCReadoutReader):
         Which planes to load: 'all' or list like ['east_U', 'east_V'].
     decode_digitization : bool
         If True, subtract pedestal from uint16 values.
+    n_wires_per_plane : dict or None
+        Optional ``{plane_label: n_wires}`` fallback used when a plane group
+        lacks an ``n_wires`` attr. The on-file attr, when present, wins. Surfaced
+        (with ``num_time_steps``) so a downstream ``Densify`` transform can
+        reconstruct a *fixed* ``(n_wires, n_ticks)`` grid.
+    num_time_steps : int or None
+        Optional override for the per-file tick count. When ``None`` it is read
+        from ``/config`` (or the first event's) ``num_time_steps`` attr.
+    pedestal_per_plane : dict or None
+        Optional ``{plane_label: pedestal}`` fallback used when a plane group
+        lacks a ``pedestal`` attr. The on-file attr, when present, wins. Surfaced
+        so a downstream ``Digitize`` transform can quantize in raw-ADC space.
     """
 
     _MODALITY = 'sensor'
 
     def __init__(self, data_root, split='train', dataset_name='sim',
-                 planes='all', decode_digitization=True):
+                 planes='all', decode_digitization=True,
+                 n_wires_per_plane=None, num_time_steps=None,
+                 pedestal_per_plane=None):
         self.data_root = data_root
         self.split = split
         self.dataset_name = dataset_name
         self.planes = planes
         self.decode_digitization = decode_digitization
+        # Geometry for densify: per-plane wire count + file-level tick count.
+        # On-file attrs are authoritative; ctor kwargs are fallbacks.
+        self.n_wires_per_plane = dict(n_wires_per_plane or {})
+        # Per-plane pedestal (ADC) for a downstream Digitize; attr wins.
+        self.pedestal_per_plane = dict(pedestal_per_plane or {})
         self._init_shards()
         self.readout_type = self._detect_readout_type()
+        self.num_time_steps = (num_time_steps if num_time_steps is not None
+                               else self._detect_num_time_steps())
 
     def _scan_readout_type(self, path):
         """Fallback scan for files without the readout_type attr. Handles old
@@ -74,6 +95,27 @@ class JAXTPCSensorReader(JAXTPCReadoutReader):
                     elif 'delta_wire' in vol:
                         return 'wire'
                 break
+        return None
+
+    def _detect_num_time_steps(self):
+        """Read the per-file tick count from ``/config`` or first-event attrs.
+
+        Returns ``None`` if no file carries the attr (older fixtures); a
+        downstream ``Densify`` then needs ``num_time_steps`` supplied explicitly.
+        """
+        for path in self.h5_files:
+            try:
+                with h5py.File(path, 'r', libver='latest', swmr=True) as f:
+                    if 'config' in f and 'num_time_steps' in f['config'].attrs:
+                        return int(f['config'].attrs['num_time_steps'])
+                    for ek in f:
+                        if ek.startswith('event_'):
+                            if 'num_time_steps' in f[ek].attrs:
+                                return int(f[ek].attrs['num_time_steps'])
+                            break
+            except Exception as e:
+                log.warning("num_time_steps detection failed on %s: %s", path, e)
+                continue
         return None
 
     def _plane_has_payload(self, g):
@@ -164,5 +206,12 @@ class JAXTPCSensorReader(JAXTPCReadoutReader):
                 data_dict[f'{prefix}.wire'] = wire
                 data_dict[f'{prefix}.time'] = time
                 data_dict[f'{prefix}.value'] = values
+                # Surface the fixed wire count for densify + the pedestal for
+                # digitize (attrs win over the ctor fallbacks). A missing entry
+                # is tolerated — the dataset/transform report it.
+                if 'n_wires' in pg.attrs:
+                    self.n_wires_per_plane[plane_label] = int(pg.attrs['n_wires'])
+                if 'pedestal' in pg.attrs:
+                    self.pedestal_per_plane[plane_label] = int(pg.attrs['pedestal'])
 
         return data_dict

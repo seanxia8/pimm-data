@@ -219,9 +219,12 @@ def _build_jaxtpc_plane(rng, n_groups, n_pixels_per_plane, readout_type='wire'):
     # CSR total so sensor != hits, mirroring electronics shaping which
     # spreads each hits pixel across many sensor ticks.
     n_sparse = max(total * 3 + 1, 2)
+    # delta_time >= 1 after the anchor => strictly-increasing time => unique
+    # (wire, time) pairs (production sparse COO is duplicate-free; this lets the
+    # densify scatter / numpy<->torch parity be exact and unambiguous).
     delta_time = np.concatenate([
         np.array([0], dtype=np.int16),
-        rng.integers(0, 6, size=n_sparse - 1, dtype=np.int16),
+        rng.integers(1, 6, size=n_sparse - 1, dtype=np.int16),
     ])
     values = rng.integers(100, 4000, size=n_sparse, dtype=np.uint16)
 
@@ -262,6 +265,14 @@ def _build_jaxtpc_plane(rng, n_groups, n_pixels_per_plane, readout_type='wire'):
         ])
         out['wire_start'] = int(rng.integers(0, 100))
 
+    # Fixed grid extent for a downstream Densify: reconstruct the same absolute
+    # indices the reader will (cumsum + start) and record the covering size.
+    times = np.cumsum(out['delta_time'].astype(np.int64)) + out['time_start']
+    out['max_time'] = int(times.max()) if times.size else 0
+    if readout_type != 'pixel':
+        wires = np.cumsum(out['delta_wire'].astype(np.int64)) + out['wire_start']
+        out['n_wires'] = int(wires.max()) + 1 if wires.size else 0
+
     return out
 
 
@@ -291,6 +302,22 @@ def _write_jaxtpc_sensor(path, events, readout_type='wire'):
         cfg = f.create_group('config')
         cfg.attrs['n_events'] = len(events)
         cfg.attrs['readout_type'] = readout_type
+        # One fixed tick count per file, covering every plane's max time —
+        # mirrors production (sensor files carry num_time_steps) and lets a
+        # downstream Densify build a fixed (n_wires, n_ticks) grid.
+        cfg.attrs['num_time_steps'] = 1 + max(
+            (plane['max_time'] for volumes in events for v in volumes
+             for plane in v['planes'].values()), default=0)
+        # n_wires is detector geometry — CONSTANT per plane type across events
+        # (not the per-event max). Use the global max so every event's grid is
+        # the same fixed (n_wires, n_ticks); per-event n_wires breaks batching.
+        nwires_by_type = {}
+        if readout_type != 'pixel':
+            for volumes in events:
+                for v in volumes:
+                    for pn, plane in v['planes'].items():
+                        nwires_by_type[pn] = max(nwires_by_type.get(pn, 0),
+                                                 int(plane['n_wires']))
         for i, volumes in enumerate(events):
             evt = f.create_group(f'event_{i:03d}')
             for v in volumes:
@@ -299,6 +326,8 @@ def _write_jaxtpc_sensor(path, events, readout_type='wire'):
                     pg = vg.create_group(plane_name)
                     pg.attrs['time_start'] = plane['time_start']
                     pg.attrs['pedestal'] = plane['pedestal']
+                    if readout_type != 'pixel':
+                        pg.attrs['n_wires'] = int(nwires_by_type[plane_name])
                     pg.create_dataset('delta_time', data=plane['delta_time'])
                     pg.create_dataset('values', data=plane['values'])
                     if readout_type == 'pixel':

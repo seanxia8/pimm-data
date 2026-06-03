@@ -10,11 +10,27 @@ unmapped values. Typical use: after loading with ``label_key='pdg'``
 (so ``segment`` holds raw PDG codes), remap to a task-specific set of
 class indices before loss. Works for any int-valued segment column
 (pdg, interaction, cluster) — not PDG-specific.
+
+``Densify`` / ``AddNoise`` / ``Digitize``: the dense sensor-stream chain. The
+full forward path mirrors production ``make_noisy``::
+
+    ApplyToStream(stream='sensor', transforms=[
+        dict(type='Densify'),    # sparse COO -> dense (n_wires, n_ticks)
+        dict(type='AddNoise'),   # img += generate_noise(...)  (incoherent/coherent)
+        dict(type='Digitize'),   # round(img+pedestal).clip(0, adc_max) - pedestal
+    ])
+
+All three operate on the ``sensor`` sub-dict — wrap them in
+``ApplyToStream(stream='sensor', transforms=[...])``.
 """
+
+import hashlib
 
 import numpy as np
 
 from .transform import TRANSFORMS, Compose
+from .noise import (generate_noise, digitize, DEFAULT_ENC,
+                    DEFAULT_SAMPLING_RATE_HZ)
 from .utils.pdg import pdg_to_semantic, MOTIF_MAP, PID_MAP
 
 _NAMED_SCHEMES = {
@@ -288,3 +304,258 @@ class AggregateSensorHits:
         out[self.time_key] = time_a.astype(np.float32, copy=False)
         out[self.sensor_key] = uniq.astype(np.int64, copy=False)
         return out
+
+
+@TRANSFORMS.register_module()
+class Densify:
+    """Scatter sparse COO sensor planes into dense ``(n_wires, n_ticks)`` images.
+
+    Operates on a ``sensor`` sub-dict (wrap in
+    ``ApplyToStream(stream='sensor', ...)``). Reads ``sub['raw'][label]``
+    (``{'wire', 'time', 'value'}``, already absolute indices + pedestal-
+    subtracted by the reader) and the per-plane grid extent from
+    ``sub['shape'][label] = (n_wires, n_ticks)``. Writes
+    ``sub['dense'][label] = (n_wires, n_ticks) float32`` and **keeps** the point
+    cloud (``coord`` / ``energy`` / ``raw``) intact.
+
+    Wire readout only — a dense 2-D image is meaningless for pixel readout, so
+    ``on_pixel='raise'`` (default) errors and ``on_pixel='skip'`` no-ops, letting
+    one config run mixed datasets.
+
+    Parameters
+    ----------
+    fill : float
+        Value for empty (unhit) cells. Default ``0.0`` — matches the reader's
+        pedestal-subtracted convention (empty = baseline = 0).
+    dtype : str
+        Output dtype. Default ``'float32'``.
+    on_pixel : {'raise', 'skip'}
+        Behaviour when the stream is pixel readout.
+    require_shape : bool
+        If ``True`` (default), raise when a plane has no ``shape`` entry. If
+        ``False``, fall back to data-inferred extents (``max+1``) — note this is
+        event-dependent and breaks fixed-geometry batching.
+    dense_key : str
+        Sub-dict key to write. Default ``'dense'``.
+    """
+
+    def __init__(self, fill=0.0, dtype='float32', on_pixel='raise',
+                 require_shape=True, dense_key='dense', assert_unique=True):
+        if on_pixel not in ('raise', 'skip'):
+            raise ValueError(f"on_pixel must be 'raise' or 'skip', got {on_pixel!r}")
+        self.fill = float(fill)
+        self.dtype = dtype
+        self.on_pixel = on_pixel
+        self.require_shape = bool(require_shape)
+        self.dense_key = dense_key
+        self.assert_unique = bool(assert_unique)
+
+    def __call__(self, sub):
+        if sub.get('readout_type') == 'pixel':
+            if self.on_pixel == 'raise':
+                raise ValueError(
+                    "Densify supports wire readout only; got pixel. Pass "
+                    "on_pixel='skip' to no-op on pixel streams.")
+            return sub
+
+        raw = sub.get('raw', {})
+        shapes = sub.get('shape', {})
+        out = {}
+        for label, cols in raw.items():
+            wire_raw = np.asarray(cols['wire'])
+            time_raw = np.asarray(cols['time'])
+            if not (np.issubdtype(wire_raw.dtype, np.integer)
+                    and np.issubdtype(time_raw.dtype, np.integer)):
+                raise TypeError(
+                    f"Densify: plane {label!r} wire/time must be integer grid "
+                    f"indices (got {wire_raw.dtype}/{time_raw.dtype}); densify "
+                    "reads the immutable raw COO, never a mutated float coord.")
+            wire = wire_raw.astype(np.intp, copy=False)
+            time = time_raw.astype(np.intp, copy=False)
+            val = np.asarray(cols['value']).astype(self.dtype, copy=False)
+
+            if label in shapes:
+                n_wires, n_ticks = int(shapes[label][0]), int(shapes[label][1])
+            elif self.require_shape:
+                raise KeyError(
+                    f"Densify: no shape for plane {label!r}. Surface "
+                    "n_wires/num_time_steps from the sensor reader, or pass "
+                    "require_shape=False to infer extents from the data.")
+            else:
+                n_wires = int(wire.max()) + 1 if wire.size else 0
+                n_ticks = int(time.max()) + 1 if time.size else 0
+
+            img = np.full((n_wires, n_ticks), self.fill, dtype=self.dtype)
+            if wire.size:
+                if self.assert_unique:
+                    # production sparse COO is duplicate-free; a duplicate
+                    # (wire,time) makes the scatter ambiguous (assignment last-wins
+                    # vs index_add_ sum diverge), so catch it rather than silently
+                    # pick a convention.
+                    flat = wire.astype(np.int64) * n_ticks + time.astype(np.int64)
+                    if np.unique(flat).size != flat.size:
+                        raise ValueError(
+                            f"Densify: duplicate (wire,time) in plane {label!r} "
+                            "— sparse COO must be unique per cell.")
+                img[wire, time] = val
+            out[label] = img
+
+        sub[self.dense_key] = out
+        return sub
+
+
+@TRANSFORMS.register_module()
+class AddNoise:
+    """Inject forward detector noise on dense sensor planes (after ``Densify``).
+
+    Thin adapter over :func:`pimm_data.noise.add_noise`. Operates on a ``sensor``
+    sub-dict that already carries ``dense`` (so it must run *after* ``Densify``):
+    each plane image is perturbed in place by incoherent and/or per-group
+    coherent noise. Tags (``incoherent`` / ``coherent`` and the parameters) are
+    set from the config.
+
+    Reproducibility: the per-event RNG is derived from a stable event id
+    (``sub['name']``, surfaced by the dataset) hashed with ``base_seed`` — so the
+    same event gets the same noise every epoch regardless of which DataLoader
+    worker happens to draw it, without touching numpy's global RNG state.
+
+    Default tags are ``incoherent=False, coherent=True``: JAXTPC output already
+    carries incoherent noise, so the common load-time use is adding the coherent
+    component it omits. Set ``incoherent=True`` (with ``wire_lengths_m``) to add
+    incoherent noise to noise-free input.
+    """
+
+    def __init__(self, incoherent=False, coherent=True, group_size=64,
+                 wire_lengths_m=None, enc=DEFAULT_ENC, series_spectrum=None,
+                 sampling_rate_hz=DEFAULT_SAMPLING_RATE_HZ, coh_rms=2.5,
+                 coh_corner_freq_hz=20000.0, coh_spectral_slope=1.5, beta=0.15,
+                 base_seed=0, dense_key='dense', planes=None, name_key='name'):
+        self.incoherent = bool(incoherent)
+        self.coherent = bool(coherent)
+        self.group_size = int(group_size)
+        self.wire_lengths_m = wire_lengths_m
+        self.enc = tuple(enc)
+        self.series_spectrum = series_spectrum
+        self.sampling_rate_hz = float(sampling_rate_hz)
+        self.coh_rms = float(coh_rms)
+        self.coh_corner_freq_hz = float(coh_corner_freq_hz)
+        self.coh_spectral_slope = float(coh_spectral_slope)
+        self.beta = float(beta)
+        self.base_seed = int(base_seed)
+        self.dense_key = dense_key
+        self.planes = planes
+        self.name_key = name_key
+
+    def _event_rng(self, name):
+        h = hashlib.blake2b(str(name).encode('utf-8'), digest_size=8).digest()
+        seed = (int.from_bytes(h, 'little') ^ self.base_seed) & ((1 << 64) - 1)
+        return np.random.default_rng(seed)
+
+    def __call__(self, sub):
+        if sub.get('readout_type') == 'pixel':
+            return sub
+        dense = sub.get(self.dense_key)
+        if dense is None:
+            raise KeyError(
+                f"AddNoise: no {self.dense_key!r} in the sensor stream — run "
+                "Densify before AddNoise.")
+        rng = self._event_rng(sub.get(self.name_key, ''))
+        labels = self.planes if self.planes is not None else list(dense)
+        for label in labels:
+            if label not in dense:
+                continue
+            img = dense[label]
+            noise = generate_noise(
+                img.shape, rng=rng, wire_lengths_m=self.wire_lengths_m,
+                incoherent=self.incoherent, coherent=self.coherent,
+                enc=self.enc, series_spectrum=self.series_spectrum,
+                sampling_rate_hz=self.sampling_rate_hz,
+                group_size=self.group_size, coh_rms=self.coh_rms,
+                coh_corner_freq_hz=self.coh_corner_freq_hz,
+                coh_spectral_slope=self.coh_spectral_slope, beta=self.beta)
+            dense[label] = img + noise
+        return sub
+
+
+@TRANSFORMS.register_module()
+class Digitize:
+    """Quantize dense sensor planes to integer ADC codes (production digitize).
+
+    Per plane: ``round(img*gain + pedestal).clip(0, adc_max) - pedestal`` — the
+    pedestal-subtracted output of JAXTPC's ``_digitize_signal`` / the doraemon
+    ``make_noisy`` path. Run it LAST in the dense chain
+    (``Densify -> AddNoise -> Digitize``), so the analog ``signal + noise`` is
+    quantized exactly as the detector would.
+
+    Pedestal resolution (raw-ADC offset that sets where 0 and saturation fall):
+    the ``pedestal`` arg wins (a scalar applied to every plane, or a
+    ``{plane_label: pedestal}`` dict), else the per-plane pedestal surfaced by
+    the reader (``sub['pedestal']``), else ``0`` — or raise when
+    ``require_pedestal=True``. ``adc_max`` defaults to ``(1 << n_bits) - 1``
+    (12-bit → 4095). Wire readout only (pixel streams pass through unchanged).
+
+    Parameters
+    ----------
+    n_bits : int
+        Code depth; sets ``adc_max = (1 << n_bits) - 1`` when ``adc_max`` is None.
+    adc_max : float or None
+        Explicit max code (overrides ``n_bits``).
+    gain : float
+        Scale applied before adding the pedestal (1.0 = input already in ADC).
+    pedestal : float, dict, or None
+        Pedestal override (scalar or per-plane). None → use ``sub['pedestal']``.
+    require_pedestal : bool
+        Raise if a plane has no resolvable pedestal (instead of defaulting to 0).
+    dense_key : str
+        Which dense field to quantize. Default ``'dense'``.
+    planes : list or None
+        Restrict to these plane labels (None → all dense planes).
+    """
+
+    def __init__(self, n_bits=12, adc_max=None, gain=1.0, pedestal=None,
+                 require_pedestal=False, dense_key='dense', planes=None):
+        self.n_bits = int(n_bits)
+        self.adc_max = adc_max
+        self.gain = float(gain)
+        self.pedestal = pedestal
+        self.require_pedestal = bool(require_pedestal)
+        self.dense_key = dense_key
+        self.planes = planes
+
+    def _pedestal_for(self, label, sub):
+        if isinstance(self.pedestal, dict):
+            if label in self.pedestal:
+                return float(self.pedestal[label])
+        elif self.pedestal is not None:
+            return float(self.pedestal)
+        ped_map = sub.get('pedestal', {})
+        if label in ped_map:
+            return float(ped_map[label])
+        if self.require_pedestal:
+            raise KeyError(
+                f"Digitize: no pedestal for plane {label!r}; surface it from "
+                "the reader (sensor file pedestal attr) or pass pedestal=.")
+        return 0.0
+
+    def __call__(self, sub):
+        if sub.get('readout_type') == 'pixel':
+            return sub
+        dense = sub.get(self.dense_key)
+        if dense is None:
+            raise KeyError(
+                f"Digitize: no {self.dense_key!r} in the sensor stream — run "
+                "Densify (and AddNoise) before Digitize.")
+        marker = f'_digitized_{self.dense_key}'
+        if sub.get(marker):
+            raise RuntimeError(
+                f"Digitize: {self.dense_key!r} already digitized — digitize is "
+                "not idempotent (pedestal/gain round-trip); run it at most once.")
+        labels = self.planes if self.planes is not None else list(dense)
+        for label in labels:
+            if label not in dense:
+                continue
+            ped = self._pedestal_for(label, sub)
+            dense[label] = digitize(dense[label], ped, n_bits=self.n_bits,
+                                    adc_max=self.adc_max, gain=self.gain)
+        sub[marker] = True
+        return sub

@@ -70,7 +70,7 @@ float32 `(n_volumes, 3, 2)` mm; `pedestals` int32 `(n_volumes, max_planes)` (dig
 
 ---
 
-## 2. EDEP — `{dataset}_step_{NNNN}.h5`
+## 2. STEP — `{dataset}_step_{NNNN}.h5`
 Pure-physics 3D truth deposits (no track/group/instance — those live in hits/labl).
 
 **`/config`:** attrs `dataset_name, file_index, source_file, n_events,

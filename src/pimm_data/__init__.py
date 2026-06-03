@@ -33,9 +33,6 @@ from .multimodal import MultiModalEventDataset
 # Detector-specific transforms (register PDGToSemantic)
 from . import detector_transforms  # noqa: F401
 
-# Anchors (optional — imported lazily by transform.py; expose for direct use)
-from .anchors import compute_anchors, ANCHOR_DEFAULT_CFG
-
 __all__ = [
     "Registry",
     "build_from_cfg",
@@ -52,8 +49,6 @@ __all__ = [
     "LUCiDDataset",
     "PILArNetH5Dataset",
     "MultiModalEventDataset",
-    "compute_anchors",
-    "ANCHOR_DEFAULT_CFG",
 ]
 
 __version__ = "0.1.0"

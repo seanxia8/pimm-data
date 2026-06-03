@@ -46,10 +46,10 @@ def test_compose_rejects_non_callable_non_dict():
 
 
 def test_transforms_registered_count():
-    # 37 from transform.py + PDGToSemantic/RemapSegment/ApplyToStream/
-    # AggregateSensorHits from detector_transforms.py (= 41 after the
-    # boundary-refactor drops; SSL transforms move to pimm in a later PR).
-    assert len(TRANSFORMS) >= 39
+    # 31 from transform.py + PDGToSemantic/RemapSegment/ApplyToStream/
+    # AggregateSensorHits from detector_transforms.py = 35, after the
+    # boundary-refactor drops (PR-A) and the SSL move to pimm (PR-C).
+    assert len(TRANSFORMS) >= 33
     # A few anchor cases
     for name in ('ToTensor', 'GridSample', 'Collect', 'NormalizeCoord',
                  'RandomRotate', 'PDGToSemantic', 'ApplyToStream',

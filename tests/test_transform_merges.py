@@ -1,7 +1,6 @@
 """De-fork Step 1 (Part 01): merged transforms ported/generalized from the
 research branch — RelativeLogNormalize, LogTransform.clip, generalized
-GridSample reducers, the MultiViewGenerator.get_view guard, and the
-index_operator prefix-match (D25).
+GridSample reducers, and the index_operator prefix-match (D25).
 
 Golden / invariant tests (stronger than cross-import parity for correctness).
 """

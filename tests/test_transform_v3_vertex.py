@@ -14,7 +14,7 @@ import pytest
 from pimm_data.transform import (
     NormalizeCoord, PositiveShift, CenterShift, RandomShift, RandomRotate,
     RandomRotateTargetAngle, RandomScale, RandomFlip, PointClip,
-    ConditionalRandomTransform, MixedScaleGeometryMultiViewGenerator,
+    ConditionalRandomTransform,
     index_operator,
 )
 
@@ -107,25 +107,5 @@ def test_index_operator_carries_vertex_and_is_primary():
     assert out["is_primary"][:, 0].tolist() == [0, 2, 4]
 
 
-def test_mixed_scale_multiview_smoke():
-    _seed(3)
-    rng = np.random.default_rng(0)
-    n = 400
-    coord = rng.uniform(-1, 1, size=(n, 3)).astype(np.float32)
-    energy = rng.uniform(0, 1, size=(n, 1)).astype(np.float32)
-    gen = MixedScaleGeometryMultiViewGenerator(
-        fine_local_view_num=2,
-        fine_local_view_scale=(0.05, 0.1),
-        fine_center_mode="geometry",
-        global_view_num=2,
-        global_view_scale=(0.5, 1.0),
-        local_view_num=4,
-        local_view_scale=(0.2, 0.4),
-        view_keys=("coord", "energy"),
-        max_size=n,
-    )
-    out = gen({"coord": coord.copy(), "energy": energy.copy()})
-    assert "global_coord" in out and "local_coord" in out
-    assert "global_offset" in out and "local_offset" in out
-    assert out["global_offset"][-1] == out["global_coord"].shape[0]
-    assert out["local_offset"][-1] == out["local_coord"].shape[0]
+# NOTE: test_mixed_scale_multiview_smoke moved to pimm
+# (tests/test_ssl_transforms.py) with MixedScaleGeometryMultiViewGenerator.

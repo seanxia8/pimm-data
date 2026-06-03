@@ -9,10 +9,8 @@ here once; each subclass supplies only its reader construction (``__init__``)
 and its per-modality ``_build_*`` cloud builders / label model.
 
 This base is self-contained (it inherits ``torch.utils.data.Dataset``
-directly). The generic npy-folder :class:`~pimm_data.defaults.DefaultDataset`
-is a separate standalone utility and is no longer in this inheritance chain —
-the detector datasets never used its npy loader, cache, or test-time
-augmentation path (all overridden or unreached).
+directly): the detector datasets never used a generic npy loader, cache, or
+test-time augmentation path.
 
 A subclass must, in ``__init__`` (before ``super().__init__``): set
 ``_modalities`` / ``_max_len`` / ``_strict_lengths`` / ``_source_data_root``,

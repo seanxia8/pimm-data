@@ -18,9 +18,6 @@ from ._registry import Registry, build_from_cfg
 from .builder import DATASETS, build_dataset
 from .transform import Compose, TRANSFORMS
 
-# Core dataset bases (register DefaultDataset, ConcatDataset)
-from .defaults import DefaultDataset, ConcatDataset
-
 # Collate utilities
 from .collate import collate_fn, point_collate_fn, inseg_collate_fn
 
@@ -52,8 +49,6 @@ __all__ = [
     "build_dataset",
     "Compose",
     "TRANSFORMS",
-    "DefaultDataset",
-    "ConcatDataset",
     "collate_fn",
     "point_collate_fn",
     "inseg_collate_fn",

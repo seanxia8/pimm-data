@@ -68,14 +68,6 @@ def test_utils_package_reexports():
     assert via_package is shared_dict
 
 
-def test_defaults_uses_real_shared_dict_not_stub():
-    """DefaultDataset.get_data references module-level shared_dict when
-    cache=True. Verify it's bound to the real implementation."""
-    import pimm_data.defaults as d
-    from pimm_data.utils.cache import shared_dict
-    assert d.shared_dict is shared_dict
-
-
 # ───── functional round-trip tests (skip without SharedArray) ─────
 
 @needs_shm

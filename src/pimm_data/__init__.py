@@ -33,6 +33,18 @@ from .multimodal import MultiModalEventDataset
 # Detector-specific transforms (register PDGToSemantic)
 from . import detector_transforms  # noqa: F401
 
+# Torch-free public surface: HDF5 readers + the joint cross-modality index
+# helper. This is the "bring-your-own-framework / roll-your-own-Dataset" path —
+# the reader/index/decode layer imports only numpy/h5py (no torch), so a JAX or
+# numpy consumer can read events without the torch transform layer. (Note: torch
+# is still a required *install* dep — see ADR §5 — this exposes the framework-
+# neutral reader code, not a torch-free import path.)
+from .readers import (
+    JAXTPCEdepReader, JAXTPCSensorReader, JAXTPCHitsReader, JAXTPCLablReader,
+    LUCiDEdepReader, LUCiDSensorReader, LUCiDHitsReader, LUCiDLablReader,
+)
+from ._joint_index import build_joint_index
+
 __all__ = [
     "Registry",
     "build_from_cfg",
@@ -49,6 +61,16 @@ __all__ = [
     "LUCiDDataset",
     "PILArNetH5Dataset",
     "MultiModalEventDataset",
+    # readers + joint index (torch-free public surface)
+    "JAXTPCEdepReader",
+    "JAXTPCSensorReader",
+    "JAXTPCHitsReader",
+    "JAXTPCLablReader",
+    "LUCiDEdepReader",
+    "LUCiDSensorReader",
+    "LUCiDHitsReader",
+    "LUCiDLablReader",
+    "build_joint_index",
 ]
 
 __version__ = "0.1.0"

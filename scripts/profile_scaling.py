@@ -32,15 +32,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _profile_common as pc
 
 # The per-event read worker is shared (and picklable for mp.Pool) in
-# _profile_common.per_event_edep_read; tasks carry the dataset name as the
+# _profile_common.per_event_step_read; tasks carry the dataset name as the
 # first tuple element so the worker reads the right schema.
-_per_event_h5py_read = pc.per_event_edep_read
+_per_event_h5py_read = pc.per_event_step_read
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--dataset', choices=pc.DATASETS, default='lucid',
-                   help='Which dataset edep shards to read (default: lucid)')
+                   help='Which dataset step shards to read (default: lucid)')
     p.add_argument('--data-root', default=None,
                    help='Dataset root (default: per-dataset standard root)')
     p.add_argument('--split', default=None,
@@ -56,21 +56,21 @@ def main():
     if args.split is None:
         args.split = pc.default_split(args.dataset)
 
-    edep_files = pc.modality_files(args.dataset, args.data_root, 'edep',
+    step_files = pc.modality_files(args.dataset, args.data_root, 'step',
                                    split=args.split)
-    assert len(edep_files) > 0, (
-        f'no edep shards under {args.data_root} (split={args.split!r})')
+    assert len(step_files) > 0, (
+        f'no step shards under {args.data_root} (split={args.split!r})')
     print(f'dataset            = {args.dataset}')
     print(f'data_root          = {args.data_root}')
     print(f'split              = {args.split!r}')
-    print(f'edep shards        = {len(edep_files)}')
+    print(f'step shards        = {len(step_files)}')
     print(f'events per worker  = {args.n_events_per_worker}')
     print(f'worker counts      = {args.worker_counts}')
     print()
 
     # -- 0) Filesystem cache warmup pass on the first few shards ----------
     print('--- FS warmup (read first 5 shards once, sequential) ---')
-    for f in edep_files[:5]:
+    for f in step_files[:5]:
         _per_event_h5py_read((args.dataset, f, 0, 50))
     print('  done\n')
 
@@ -78,7 +78,7 @@ def main():
     print('--- baseline: single process, raw h5py ---')
     t0 = time.perf_counter()
     elapsed, n_evt, n_bytes = _per_event_h5py_read(
-        (args.dataset, edep_files[0], 0, args.n_events_per_worker))
+        (args.dataset, step_files[0], 0, args.n_events_per_worker))
     base_evt_per_s = n_evt / elapsed
     base_mb_per_s  = (n_bytes / 1e6) / elapsed
     print(f'  {n_evt} events in {elapsed:.2f}s  '
@@ -93,12 +93,12 @@ def main():
           f'{"agg MB/s":>9}  {"speedup":>8}  {"efficiency":>10}')
     proc_results = []
     for w in args.worker_counts:
-        if w > len(edep_files):
-            print(f'  {w:>7}  (skipped: only {len(edep_files)} shards)')
+        if w > len(step_files):
+            print(f'  {w:>7}  (skipped: only {len(step_files)} shards)')
             continue
         # Each worker gets a different shard so we exercise read-parallelism
         # without forcing same-file contention.
-        tasks = [(args.dataset, edep_files[i], 0, args.n_events_per_worker)
+        tasks = [(args.dataset, step_files[i], 0, args.n_events_per_worker)
                  for i in range(w)]
         t0 = time.perf_counter()
         with mp.Pool(w) as pool:
@@ -121,9 +121,9 @@ def main():
     print(f'  {"threads":>7}  {"wall s":>7}  {"agg evt/s":>10}  '
           f'{"speedup":>8}  {"efficiency":>10}')
     for w in args.worker_counts:
-        if w > len(edep_files):
+        if w > len(step_files):
             continue
-        tasks = [(args.dataset, edep_files[i], 0, args.n_events_per_worker)
+        tasks = [(args.dataset, step_files[i], 0, args.n_events_per_worker)
                  for i in range(w)]
         t0 = time.perf_counter()
         with ThreadPoolExecutor(max_workers=w) as ex:
@@ -143,7 +143,7 @@ def main():
     print(f'  {"workers":>7}  {"wall s":>7}  {"agg evt/s":>10}  '
           f'{"speedup":>8}')
     for w in args.worker_counts:
-        tasks = [(args.dataset, edep_files[0], i * 100, args.n_events_per_worker)
+        tasks = [(args.dataset, step_files[0], i * 100, args.n_events_per_worker)
                  for i in range(w)]
         t0 = time.perf_counter()
         with mp.Pool(w) as pool:

@@ -54,8 +54,10 @@ def _list_of_dicts_collate(batch):
     return batch
 
 
-def _build_dataset(dataset, data_root, split):
-    return pc.build_dataset(dataset, data_root, split=split)
+def _build_dataset(dataset, data_root, split, transform_variant='loading_only'):
+    return pc.build_dataset(
+        dataset, data_root, split=split,
+        transform=pc.transform_variant(dataset, transform_variant))
 
 
 def _warmup_filesystem(ds, n_events=200):
@@ -390,6 +392,14 @@ def main():
     p.add_argument('--split', default=None,
                    help='Split subdir under each modality dir. Default: "" '
                         '(lucid) or the doraemon run (jaxtpc).')
+    p.add_argument('--transform-variant', default='loading_only',
+                   choices=['loading_only', 'collect_first', 'totensor_first'],
+                   help='Collect/ToTensor ordering (see _profile_common.'
+                        'transform_variant). loading_only=[Collect] (prior '
+                        'baseline), collect_first=[Collect,ToTensor] (the '
+                        'fix), totensor_first=[ToTensor,Collect] (the '
+                        'training-config order that tensorizes discarded '
+                        'streams). Default: loading_only.')
     p.add_argument('--workers', nargs='+', type=int,
                    default=[0, 1, 2, 4, 8, 16],
                    help='num_workers values to sweep')
@@ -514,6 +524,7 @@ def main():
     print(f'dataset   = {args.dataset}')
     print(f'data_root = {args.data_root}')
     print(f'split     = {args.split!r}')
+    print(f'transform = {args.transform_variant}')
     print(f'workers   = {args.workers}')
     print(f'batches   = {args.batches}')
     if args.target_events:
@@ -523,7 +534,8 @@ def main():
         print(f'warmup={args.n_warmup} timed={args.n_timed}')
     print()
 
-    ds = _build_dataset(args.dataset, args.data_root, args.split)
+    ds = _build_dataset(args.dataset, args.data_root, args.split,
+                        transform_variant=args.transform_variant)
     print(f'len(ds) = {len(ds)}\n')
 
     if not args.no_fs_warmup:

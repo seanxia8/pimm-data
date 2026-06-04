@@ -10,9 +10,9 @@ blosc:lz4+shuffle is ~4x faster to read for ~19% more disk.
 Usage:
     # one file
     scripts/transcode_codec.py --src a.h5 --dst b.h5 --codec blosc-lz4
-    # a run dir (mirrors {edep,sensor,hits}/<run>/ structure), first N shards
+    # a run dir (mirrors {step,sensor,hits}/<run>/ structure), first N shards
     scripts/transcode_codec.py --src <root> --dst <root2> --run run_00266285XX \
-        --modalities hits edep sensor --shards 1 --codec blosc-lz4
+        --modalities hits step sensor --shards 1 --codec blosc-lz4
 
 Downstream readers of blosc/zstd/lz4 files must `import hdf5plugin`.
 """
@@ -80,7 +80,7 @@ def main():
     p.add_argument('--codec', default='blosc-lz4',
                    help='gzip|gzip-1|lzf|lz4|zstd|blosc-lz4|blosc-zstd|none')
     p.add_argument('--run', default=None, help='run subdir (dir mode)')
-    p.add_argument('--modalities', nargs='+', default=['hits', 'edep', 'sensor'])
+    p.add_argument('--modalities', nargs='+', default=['hits', 'step', 'sensor'])
     p.add_argument('--dataset-name', default='sim')
     p.add_argument('--shards', type=int, default=None,
                    help='limit to first N shards per modality (dir mode)')

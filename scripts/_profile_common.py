@@ -10,10 +10,10 @@ What differs between the two datasets:
 
 * **file prefix / dataset_name** — ``wc`` vs ``sim``.
 * **layout** — LUCiD shards are flat under each modality dir
-  (``edep/wc_edep_*.h5``); JAXTPC nests one level deeper by run
-  (``edep/run_00266285XX/sim_edep_*.h5``), so a run maps to ``split``.
+  (``step/wc_step_*.h5``); JAXTPC nests one level deeper by run
+  (``step/run_00266285XX/sim_step_*.h5``), so a run maps to ``split``.
 * **modalities** — LUCiD has ``labl``; the doraemon JAXTPC sample does
-  not, so JAXTPC defaults to ``(edep, sensor, hits)``.
+  not, so JAXTPC defaults to ``(step, sensor, hits)``.
 * **stream schema** — the minimal "tensorize one stream" transform pulls
   different keys (LUCiD ``hits`` carries a bare ``time``; JAXTPC folds
   time into the 2-D wire ``coord`` and adds ``instance``).
@@ -37,7 +37,7 @@ except ImportError:
 
 
 # --- default dataset locations -------------------------------------------
-LUCID_DEFAULT_ROOT = '/sdf/data/neutrino/omara/wand_sk_like/config_000013'
+LUCID_DEFAULT_ROOT = '/sdf/data/neutrino/cjesus/DORAEMON/WAND/SK_like/config_000013'
 JAXTPC_DEFAULT_ROOT = '/sdf/home/o/omara/neutrino_data/omara/doraemon'
 JAXTPC_DEFAULT_SPLIT = 'run_0026628550'   # one complete run: 100 shards, 20k events
 
@@ -55,8 +55,8 @@ def default_split(dataset):
 
 def default_modalities(dataset):
     if dataset == 'jaxtpc':
-        return ('edep', 'sensor', 'hits')        # doraemon has no labl/
-    return ('edep', 'sensor', 'hits', 'labl')
+        return ('step', 'sensor', 'hits')        # doraemon has no labl/
+    return ('step', 'sensor', 'hits', 'labl')
 
 
 def file_prefix(dataset):
@@ -80,6 +80,38 @@ def default_transform(dataset):
     return [dict(type='Collect', stream='hits',
                  keys=['coord', 'energy', 'time'],
                  feat_keys=['energy', 'time'])]
+
+
+def transform_variant(dataset, name):
+    """Transform stacks that isolate the Collect / ToTensor ordering cost.
+
+    All three collect the same heaviest stream (``hits``) from the nested
+    ``{'step': {...}, 'sensor': {...}, 'hits': {...}}`` dict; they differ
+    only in whether a global ``ToTensor`` runs, and on which side of
+    ``Collect`` it sits:
+
+      * ``loading_only``  — ``[Collect(hits)]``. The prior baseline.
+        ``Collect`` already tensorizes the keys it keeps and drops the
+        other streams, so this is the cheapest path.
+      * ``collect_first`` — ``[Collect(hits), ToTensor]``. ``Collect`` drops
+        ``step`` + ``sensor`` first, so the trailing global ``ToTensor``
+        sees only the (already-tensorized) kept keys → every node is a
+        no-op. This is the fix for the training config.
+      * ``totensor_first`` — ``[ToTensor, Collect(hits)]``. The order the
+        ``jaxtpc_seg`` training config uses: the global ``ToTensor``
+        recurses the whole nested dict and tensorizes the ``step`` +
+        ``sensor`` streams that ``Collect`` then discards. That recursion
+        over the discarded streams is the wasted work the reorder removes.
+    """
+    base = default_transform(dataset)            # [Collect(...)]
+    if name in ('loading_only', 'default'):
+        return base
+    if name == 'collect_first':
+        return base + [dict(type='ToTensor')]
+    if name == 'totensor_first':
+        return [dict(type='ToTensor')] + base
+    raise ValueError(f'unknown transform variant: {name!r} '
+                     "(loading_only | collect_first | totensor_first)")
 
 
 # --- dataset construction (imports torch/pimm_data lazily) ---------------
@@ -130,7 +162,7 @@ def modality_files(dataset, data_root, modality, split=None):
 # groups, read generically (the readers consume essentially every dataset
 # under the event group, so reading them all is a faithful I/O ceiling).
 
-_LUCID_EDEP_KEYS = (
+_LUCID_STEP_KEYS = (
     'start_x', 'start_y', 'start_z', 'end_x', 'end_y', 'end_z',
     'dir_x', 'dir_y', 'dir_z', 'edep', 'time', 'track_idx',
     'beta_start', 'n_cherenkov', 'contained',
@@ -150,15 +182,15 @@ def _read_event_group_all(evt):
     return total['n']
 
 
-def read_event_edep(dataset, f, event_key):
-    """Read one event's edep arrays from an open edep file. Returns nbytes."""
+def read_event_step(dataset, f, event_key):
+    """Read one event's step arrays from an open step file. Returns nbytes."""
     if event_key not in f:
         return 0
     evt = f[event_key]
     if dataset == 'jaxtpc':
         return _read_event_group_all(evt)
     nbytes = 0
-    for key in _LUCID_EDEP_KEYS:
+    for key in _LUCID_STEP_KEYS:
         if key in evt:
             arr = evt[key][:]
             nbytes += arr.nbytes
@@ -170,8 +202,8 @@ def n_events_in(path):
         return int(f['config'].attrs['n_events'])
 
 
-def per_event_edep_read(args):
-    """Picklable Pool/Thread worker: read ``n`` edep events from one shard.
+def per_event_step_read(args):
+    """Picklable Pool/Thread worker: read ``n`` step events from one shard.
 
     ``args = (dataset, file_path, start, n)``. Returns
     ``(elapsed_s, n_events, bytes_read)``. Used by profile_scaling.py.
@@ -184,7 +216,7 @@ def per_event_edep_read(args):
         t0 = time.perf_counter()
         for i in range(n):
             ek = f'event_{(start + i) % n_in_file:03d}'
-            bytes_read += read_event_edep(dataset, f, ek)
+            bytes_read += read_event_step(dataset, f, ek)
         elapsed = time.perf_counter() - t0
     return elapsed, n, bytes_read
 
@@ -204,17 +236,17 @@ def build_readers(dataset, data_root, split=None, modalities=None):
     name = file_prefix(dataset)
 
     if dataset == 'jaxtpc':
-        from pimm_data.readers.jaxtpc_edep import JAXTPCEdepReader
+        from pimm_data.readers.jaxtpc_step import JAXTPCStepReader
         from pimm_data.readers.jaxtpc_sensor import JAXTPCSensorReader
         from pimm_data.readers.jaxtpc_hits import JAXTPCHitsReader
-        classes = {'edep': JAXTPCEdepReader, 'sensor': JAXTPCSensorReader,
+        classes = {'step': JAXTPCStepReader, 'sensor': JAXTPCSensorReader,
                    'hits': JAXTPCHitsReader}
     else:
-        from pimm_data.readers.lucid_edep import LUCiDEdepReader
+        from pimm_data.readers.lucid_step import LUCiDStepReader
         from pimm_data.readers.lucid_sensor import LUCiDSensorReader
         from pimm_data.readers.lucid_hits import LUCiDHitsReader
         from pimm_data.readers.lucid_labl import LUCiDLablReader
-        classes = {'edep': LUCiDEdepReader, 'sensor': LUCiDSensorReader,
+        classes = {'step': LUCiDStepReader, 'sensor': LUCiDSensorReader,
                    'hits': LUCiDHitsReader, 'labl': LUCiDLablReader}
 
     readers = []
@@ -266,8 +298,8 @@ def _read_event_modality(dataset, f, event_key, modality):
         return _read_event_group_all(evt)
     # LUCiD: curated per-modality columns (verbatim from the original
     # profile_loader baseline, so documented numbers are reproduced).
-    if modality == 'edep':
-        return read_event_edep(dataset, f, event_key)
+    if modality == 'step':
+        return read_event_step(dataset, f, event_key)
     keys = {'sensor': _LUCID_SENSOR_KEYS, 'hits': _LUCID_HITS_KEYS}.get(modality)
     if keys is not None:
         return sum(evt[k][:].nbytes for k in keys if k in evt)
@@ -280,7 +312,7 @@ def raw_reader(dataset, data_root, split=None, modalities=None):
     """Build a raw-h5py per-event reader over all loaded modalities.
 
     Establishes the pure-I/O ceiling: opens every shard once, indexes by
-    the edep (canonical) modality's per-shard event counts, and on each
+    the step (canonical) modality's per-shard event counts, and on each
     ``read(idx)`` touches the same datasets the readers consume.
 
     Returns ``(read_fn, close_fn, n_total_events)``.
@@ -289,8 +321,8 @@ def raw_reader(dataset, data_root, split=None, modalities=None):
         split = default_split(dataset)
     if modalities is None:
         modalities = default_modalities(dataset)
-    # edep is the canonical index source; fall back to the first modality.
-    index_mod = 'edep' if 'edep' in modalities else modalities[0]
+    # step is the canonical index source; fall back to the first modality.
+    index_mod = 'step' if 'step' in modalities else modalities[0]
 
     files = {m: modality_files(dataset, data_root, m, split=split)
              for m in modalities}

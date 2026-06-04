@@ -5,8 +5,8 @@
 produced from a 5-agent audit of both repos. Where the audit corrected or refined the ADR, it is
 called out in §1.
 
-**Repos.** Source of truth = standalone `pimm-data` (`/sdf/group/neutrino/omara/pimm-work/pimm-data/`).
-Consumer = `pimm` (`/sdf/group/neutrino/omara/pimm-work/particle-imaging-models/`); its vendored
+**Repos.** Source of truth = standalone `pimm-data` (`/sdf/group/neutrino/omara/pimm-data/`).
+Consumer = `pimm` (`/sdf/group/neutrino/omara/particle-imaging-models/`); its vendored
 `libs/pimm-data/` is the submodule checkout — never edit it directly, it follows the pin.
 
 **Status:** PLAN ONLY — nothing executed. Two open decisions in §2 gate PR-G / the guard wording.

@@ -52,7 +52,7 @@ their fixes/decisions.
   JAXTPC readers already used `present_events`.
   **Fix:** all four LUCiD readers now index
   `read_shard_meta(path)['present_events']` (sorted real event numbers), which
-  also wires in the A1 metadata cache. `lucid_edep`'s `min_segments` branch
+  also wires in the A1 metadata cache. `lucid_step`'s `min_segments` branch
   iterates `present_events`.
   **Validated on real WAND:** deleting `event_010` from a 744-event shard → reader
   reports 743, skips 10 cleanly, local index 10 remaps to event 11 (monotonic).
@@ -180,7 +180,7 @@ Decision / documentation (no behavior change):
   **Validated on real WAND:** the `config_000001/labl` dir (135 globbed, 127
   dangling, 8 live) now builds, skips the 127, and reads 5952 events from the 8
   live shards — first + last end-to-end — with no crash. Tests:
-  `test_reader_tolerates_dangling_shard` (JAXTPC edep/hits + LUCiD sensor).
+  `test_reader_tolerates_dangling_shard` (JAXTPC step/hits + LUCiD sensor).
 
 ## Takeaway
 

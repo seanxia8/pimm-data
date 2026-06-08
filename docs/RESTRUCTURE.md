@@ -349,6 +349,29 @@ check on the fixture.
 Order: 0 → (1 ∥ 2) → 3 → 4 → 5. Phase 1 is the highest single-modality-impact cleanup;
 Phases 2–4 deliver the committed C4.
 
+### Implementation status (branch `restructure-data-layer`)
+- **Phase 0 — DONE.** `stream→modality` rename, both repos; suite byte-identical (PF1).
+- **Phase 1 — DONE (labels + G2).** `labels=` label-source on JAXTPC + LUCiD (additive,
+  parity-verified); `jaxtpc_seg` config migrated; G2 unconditional `name`. *G1 deferred*
+  (start non-reproducible); *legacy `labl`-in-`modalities` hard-rejection deferred* as
+  cleanup.
+- **Phase 2 — DONE.** Namespaced `Collect(modalities={…})`; single-modality bare byte-
+  identical; collate unchanged.
+- **Phase 3 (data-layer) — DONE.** Dense stages take `modality=` (born at
+  `batch['sensor']['dense']` on the namespaced batch); device-consistency assert; the
+  "noise drift" was a test-infra `tools` collision (fixed) — **no port drift**, parity to
+  9.5e-7. *Deferred:* delete the numpy densify twins (entangled with the oracle tests; pure
+  cleanup); `plane_id→plane_gid` param rename (cosmetic).
+- **Phase 5 (data-layer) — DONE.** Transcode identity-preservation test (F1).
+- **Phase 4 — NOT STARTED (team-driven research).** The C4 fusion model + the wire-TPC
+  denoise config live in pimm and require model/physics decisions (sparse-vs-dense sensor
+  branch, ragged U/V/Y backbone, fusion, multi-task heads) + the real data — out of scope
+  for a mechanical data-layer pass. The data layer now provides everything it needs:
+  namespaced batch, sensor consumable sparse **or** densified, per-modality densify, and
+  parity-verified noise. The trainer wiring (`run_step` building `modality=`-scoped stages)
+  is small and follows the model.
+- **Suite:** 324 passed / 6 skipped / 0 failures, no deselects.
+
 ---
 
 ## 9. Test matrix (must-stay-green + new)

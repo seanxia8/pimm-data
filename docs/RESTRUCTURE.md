@@ -559,5 +559,18 @@ mechanical." On inspection it's a **structural rewrite of data-driven tests** �
 `test_jaxtpc_task_matrix.py` — touching ~10 files, for the *sole* marginal benefit of
 removing the deprecated door (the additive API already delivers the clean path). So the
 hard rejection is **reclassified as a dedicated follow-up cleanup**, lower priority than
-G1 (real infra) and the committed C4 work. Recommended order: G1 next; legacy-path
-removal as its own pass once configs have migrated.
+the committed C4 work. Recommended order: legacy-path removal as its own pass once configs
+have migrated.
+
+### G1 (per-event seeding / reproducibility) — DEFERRED
+Decision: **start non-reproducible.** Global-RNG augmentation (the current behavior) is the
+norm and trains fine; none of C1–C4 require per-event-reproducible augmentation; bit-exact
+replay isn't achievable anyway (AMP/flash nondeterministic, `deterministic=False`). The
+reproducibility that matters — the train/val/test **split** — is already done and is
+independent of G1. C4 denoise doesn't need reproducible *input* noise (the model denoises
+whatever it sees; the clean target is deterministic; the existing `content_seed(name)` is
+adequate). So G1's epoch→`__getitem__` plumbing + per-event `_rng` is deferred to when a
+real need arrives — chiefly the §11 multi-stream/user-transform seams, which would build the
+seed-`tag` *with* them. **G2 is kept** (it's just "don't drop `name`", and it helps the
+existing noise seed — not reproducibility infra). Net: **Phase 1 = labels + G2 (done)**;
+G1 parked.

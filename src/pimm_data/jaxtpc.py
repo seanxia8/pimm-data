@@ -108,6 +108,12 @@ class JAXTPCDataset(ShardEventDataset):
         File prefix (e.g., ``'sim'`` for ``sim_step_0000.h5``).
     volume : int or None
         Load only this volume index. ``None`` = all volumes.
+    labels : str | dict | None
+        Opt-in label-source decoration. ``labl`` is a label *source* (a
+        dimension table FK-joined onto ``step``/``hits``), **not** a modality.
+        A column name (e.g. ``'pdg'``) selects the segment column; a dict
+        carries ``key``/``keys``/``config``. ``None`` = no labels. (Legacy:
+        ``'labl'`` in ``modalities=`` also requests labels, deprecated.)
     label_key : str
         Which labl column to decorate the point clouds with. Must match a
         column in the labl files (``'pdg'``, ``'cluster'``, ``'interaction'``,
@@ -133,6 +139,7 @@ class JAXTPCDataset(ShardEventDataset):
         modalities=('step',),
         dataset_name='sim',
         volume=None,
+        labels=None,
         label_key='pdg',
         label_config=None,
         min_deposits=0,
@@ -164,6 +171,24 @@ class JAXTPCDataset(ShardEventDataset):
                 f"min_deposits={min_deposits} filters on step deposit counts "
                 f"but modalities={self._modalities} does not include 'step'. "
                 "Add 'step' to modalities or set min_deposits=0.")
+
+        # ``labels=`` is the opt-in for label-source decoration: ``labl`` is a
+        # label *source* (a dimension table FK-joined onto a point cloud), NOT a
+        # modality. A string sets the label column (== legacy ``label_key``); a
+        # dict carries ``key``/``keys``/``config``. Back-compat: ``'labl'`` in
+        # ``modalities=`` still requests labels (deprecated — use ``labels=``).
+        if isinstance(labels, str):
+            label_key = labels
+        elif isinstance(labels, dict):
+            label_key = labels.get('key', label_key)
+            label_keys = labels.get('keys', label_keys)
+            label_config = labels.get('config', label_config)
+        self._want_labels = (labels is not None) or ('labl' in self._modalities)
+        if self._want_labels and not ({'step', 'hits'} & set(self._modalities)):
+            raise ValueError(
+                "labels were requested (labels=/'labl') but modalities has no "
+                "decoratable point cloud — need 'step' or 'hits'; "
+                f"modalities={self._modalities}.")
 
         self._dataset_name = dataset_name
         self._volume = volume
@@ -200,7 +225,7 @@ class JAXTPCDataset(ShardEventDataset):
                 num_time_steps=num_time_steps,
                 pedestal_per_plane=pedestal_per_plane)
 
-        if 'labl' in self._modalities:
+        if self._want_labels:
             self.labl_reader = JAXTPCLablReader(
                 data_root=self._modality_root('labl'), split=split,
                 dataset_name=dataset_name, label_keys=label_keys)

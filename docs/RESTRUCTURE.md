@@ -544,3 +544,20 @@ wrong noise.** Two coupled fixes, to be done as a dedicated noise-parity pass
    parity test is deterministic, not order-flaky. (Fix this WITH #1 — alone it
    just makes the red deterministic.)
 Until then these 3 tests are kept deselected in the green-gate (not forgotten).
+
+### Labels reclassification — as-built + a corrected estimate
+Delivered (green): `labels=` opt-in on **both** `JAXTPCDataset` and `LUCiDDataset`
+(`labl` is a label *source*, auto-loaded on the `labels=` signal, still joining the
+cross-modality index via `_readers_named()`); the production `jaxtpc_seg` config
+migrated to `modalities=("step",), labels="pdg"`; parity tests confirm byte-identical
+decoration. The legacy `modalities=(...,'labl')` path is **kept working, deprecated**.
+
+**Corrected estimate:** the full *hard rejection* (flip `_validate_modalities` to reject
+`labl` in `modalities=` + migrate every legacy test) was scoped as "churny but
+mechanical." On inspection it's a **structural rewrite of data-driven tests** — esp.
+`test_lucid.py`'s parametrized modality-combo lists and the reject-asserting tests in
+`test_jaxtpc_task_matrix.py` — touching ~10 files, for the *sole* marginal benefit of
+removing the deprecated door (the additive API already delivers the clean path). So the
+hard rejection is **reclassified as a dedicated follow-up cleanup**, lower priority than
+G1 (real infra) and the committed C4 work. Recommended order: G1 next; legacy-path
+removal as its own pass once configs have migrated.

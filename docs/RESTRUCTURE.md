@@ -59,6 +59,16 @@ labels spec, deliver one event's modalities — each a sparse cloud (or, post-co
 dense grid) with its FK-joined labels and per-event targets — aligned across modalities,
 with reproducible splits.* It privileges no modality and builds no model input.
 
+**Representation-agnostic — no modality is intrinsically dense.** Every modality
+(including `sensor`) is a **sparse point cloud by default**. Densify is an *optional*
+post-collate transform you attach per-modality (`ApplyToModality('sensor', [Densify, …])`)
+— not a property of the modality. A model may consume `sensor` **sparse** (a point backbone
+on `wire/time`/`coord`) just as legitimately as densified (CNN on the grid). So the
+C4-family is `step`(sparse) + `sensor`(**sparse OR densified — model's choice**); the data
+layer forces nothing and `Densify` is itself general (configurable keys + grid geometry,
+so any modality could be densified). "Phase 3 (dense)" means *the optional densify
+transform*, never "make sensor dense."
+
 ---
 
 ## 2. Per-combination design (concrete)

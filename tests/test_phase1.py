@@ -83,6 +83,23 @@ def test_collect_rejects_both_forms():
         Collect(keys=['coord'], modalities={'step': dict(keys=['coord'])})
 
 
+def test_sensor_consumed_sparse_no_densify(jaxtpc_data_root):
+    """No dense assumption: sensor is a sparse modality. A model may collect it
+    as a 2D point cloud (coord/feat) with NO densify step — densify is opt-in."""
+    from pimm_data import collate_fn
+    ds = JAXTPCDataset(
+        data_root=jaxtpc_data_root, split='', dataset_name='sim',
+        modalities=('step', 'sensor'), labels='pdg', min_deposits=0, max_len=2,
+        transform=[dict(type='Collect', modalities={
+            'step':   dict(keys=('coord', 'segment'), feat_keys=('coord', 'energy')),
+            'sensor': dict(keys=('coord',), feat_keys=('coord', 'energy')),
+        })])
+    batch = collate_fn([ds[0], ds[1]])
+    assert batch['sensor']['coord'].shape[1] == 2          # 2D wire×time point cloud
+    assert 'feat' in batch['sensor'] and 'offset' in batch['sensor']
+    assert 'dense' not in batch['sensor']                  # nothing forced dense
+
+
 def test_g2_bare_collect_passes_name_split():
     # modality=None (bare) Collect must still carry the identity keys.
     data = {'coord': np.zeros((3, 3), np.float32), 'name': 'evt0', 'split': 'train'}

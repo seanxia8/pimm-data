@@ -134,6 +134,42 @@ def test_dense_stage_scoped_to_namespaced_modality(jaxtpc_data_root):
     assert 'dense' not in out['step'] and torch.equal(out['step']['coord'], step_coord)
 
 
+# --- Phase 5: codec transcode must preserve the holdout identity (F1) -----
+
+def test_transcode_preserves_identity_attrs(jaxtpc_data_root, tmp_path):
+    """Re-codec'ing a shard must preserve the 3-tuple identity inputs
+    (source_event_idx / global_event_offset / file_index) — otherwise the
+    identity-based holdout split silently moves (real-data finding F1)."""
+    import glob
+    import importlib.util
+    import os
+
+    from pimm_data._shard_meta import read_shard_meta
+
+    tc_path = os.path.join(os.path.dirname(__file__), '..', 'scripts',
+                           'transcode_codec.py')
+    spec = importlib.util.spec_from_file_location('transcode_codec', tc_path)
+    tc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tc)
+
+    shards = (glob.glob(os.path.join(jaxtpc_data_root, 'step', '*.h5'))
+              or glob.glob(os.path.join(jaxtpc_data_root, '**', '*step*.h5'),
+                           recursive=True))
+    assert shards, "no step shard in the fixture"
+    src = shards[0]
+    before = read_shard_meta(src)
+    dst = str(tmp_path / 'transcoded.h5')
+    tc.transcode_file(src, dst, tc.codec_kwargs('lzf'))   # built-in codec, no plugin
+    after = read_shard_meta(dst)
+
+    assert after['global_event_offset'] == before['global_event_offset']
+    assert after['file_index'] == before['file_index']
+    sb, sa = before['source_event_idx'], after['source_event_idx']
+    assert (sa is None) == (sb is None)
+    if sb is not None:
+        assert np.array_equal(sa, sb)
+
+
 def test_g2_bare_collect_passes_name_split():
     # modality=None (bare) Collect must still carry the identity keys.
     data = {'coord': np.zeros((3, 3), np.float32), 'name': 'evt0', 'split': 'train'}

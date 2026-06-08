@@ -65,6 +65,13 @@ def densify(wire, time, value, plane_id, offset, geom):
     """
     if torch.is_floating_point(wire) or torch.is_floating_point(time):
         raise TypeError("densify: wire/time must be integer grid indices")
+    # device-consistency (NOT CUDA-residency): the dense path is device-agnostic
+    # and runs wherever its inputs live, but they must all live on ONE device.
+    devs = {t.device for t in (wire, time, value, plane_id, offset)}
+    if len(devs) > 1:
+        raise ValueError(
+            f"densify: inputs span multiple devices {devs}; move the whole "
+            "batch to a single device before densify.")
     wire = wire.reshape(-1).long()
     time = time.reshape(-1).long()
     value = value.reshape(-1).to(torch.float32)

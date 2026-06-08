@@ -186,13 +186,30 @@ class Collect(object):
     instead of pickling the full array.
     """
 
-    def __init__(self, keys, offset_keys_dict=None, modality=None, **kwargs):
-        if offset_keys_dict is None:
-            offset_keys_dict = dict(offset="coord")
-        self.keys = keys
-        self.offset_keys = offset_keys_dict
-        self.modality = modality
-        self.kwargs = kwargs
+    def __init__(self, keys=None, offset_keys_dict=None, modality=None,
+                 modalities=None, **kwargs):
+        # Two forms (mutually exclusive):
+        #  * single  — keys=/modality=/feat *_keys → a flat (bare) dict, scoped to
+        #    data_dict[modality] (or the top level). Byte-identical to before.
+        #  * multi   — modalities={name: spec} → a NAMESPACED dict {name:{...}, …},
+        #    one self-contained sub-dict per modality, each with its OWN offset.
+        #    spec = dict(keys=…, offset_keys_dict=…, <feat>_keys=…). collate_fn
+        #    packs the nesting (Mapping recursion + per-sub-dict offset cumsum).
+        if modalities is not None:
+            assert keys is None and modality is None and not kwargs, (
+                "Collect: pass EITHER (keys=/modality=/feat_keys=) for one "
+                "modality OR modalities={...} for the namespaced multi form — "
+                "not both.")
+            self.modalities_spec = dict(modalities)
+        else:
+            assert keys is not None, "Collect requires keys= (or modalities=)."
+            self.modalities_spec = None
+            if offset_keys_dict is None:
+                offset_keys_dict = dict(offset="coord")
+            self.keys = keys
+            self.offset_keys = offset_keys_dict
+            self.modality = modality
+            self.kwargs = kwargs
 
     @staticmethod
     def _to_tensor(v):
@@ -202,27 +219,52 @@ class Collect(object):
             return torch.from_numpy(v)
         return v
 
-    def __call__(self, data_dict):
-        source = data_dict[self.modality] if self.modality is not None else data_dict
+    def _project(self, source, keys, offset_keys, feat_specs):
+        """Project one modality sub-dict → flat {key: tensor}: the listed keys
+        (tensorized), the derived offset(s), and concatenated feature tensors.
+        Everything not listed (e.g. ragged ``raw``) is dropped — which is what
+        keeps the projected dict collate-safe."""
         data = dict()
-        keys = [self.keys] if isinstance(self.keys, str) else self.keys
+        keys = [keys] if isinstance(keys, str) else keys
         for key in keys:
             data[key] = self._to_tensor(source[key])
-        for key, value in self.offset_keys.items():
-            data[key] = torch.tensor([source[value].shape[0]])
-        for name, feat_keys in self.kwargs.items():
+        for okey, src_key in offset_keys.items():
+            data[okey] = torch.tensor([source[src_key].shape[0]])
+        for name, feat_keys in feat_specs.items():
             name = name.removesuffix("_keys") if name.endswith("_keys") else name
             assert isinstance(feat_keys, Sequence) and not isinstance(feat_keys, str)
-            data[name] = torch.cat([self._to_tensor(source[key]).float() for key in feat_keys], dim=1)
-        # G2: name/split are the cross-boundary identity carriers — content-
-        # addressed seeding reads top-level ``batch['name']``. Pass them through
-        # UNCONDITIONALLY (whether or not a modality scope is set); a bare
-        # ``Collect`` previously dropped them, silently degrading seed
-        # reproducibility to batch position.
-        for passthrough in ("name", "split"):
-            if passthrough in data_dict and passthrough not in data:
-                data[passthrough] = data_dict[passthrough]
+            data[name] = torch.cat(
+                [self._to_tensor(source[key]).float() for key in feat_keys], dim=1)
         return data
+
+    @staticmethod
+    def _parse_spec(spec):
+        spec = dict(spec)
+        keys = spec.pop('keys')
+        offset_keys = spec.pop('offset_keys_dict', None) or dict(offset="coord")
+        return keys, offset_keys, spec  # remaining entries are <feat>_keys specs
+
+    def __call__(self, data_dict):
+        if self.modalities_spec is not None:
+            out = dict()
+            for mname, spec in self.modalities_spec.items():
+                if not isinstance(data_dict.get(mname), dict):
+                    avail = [k for k in data_dict if isinstance(data_dict.get(k), dict)]
+                    raise KeyError(
+                        f"Collect(modalities=): modality {mname!r} absent or not a "
+                        f"sub-dict; available: {avail}")
+                keys, offset_keys, feat_specs = self._parse_spec(spec)
+                out[mname] = self._project(data_dict[mname], keys, offset_keys, feat_specs)
+        else:
+            source = data_dict[self.modality] if self.modality is not None else data_dict
+            out = self._project(source, self.keys, self.offset_keys, self.kwargs)
+        # G2: name/split are the cross-boundary identity carriers (content-
+        # addressed seeding reads top-level ``batch['name']``) — pass them
+        # through UNCONDITIONALLY, at the top level, for both forms.
+        for passthrough in ("name", "split"):
+            if passthrough in data_dict and passthrough not in out:
+                out[passthrough] = data_dict[passthrough]
+        return out
 
 
 @TRANSFORMS.register_module()

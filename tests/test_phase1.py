@@ -49,6 +49,40 @@ def test_lucid_labels_param_matches_legacy(lucid_data_root):
             assert _seg_fp(new[k]) == _seg_fp(old[k])
 
 
+# --- Phase 2: namespaced multi-modality Collect ---------------------------
+
+def test_namespaced_multimodality_collect(jaxtpc_data_root):
+    """Collect(modalities={...}) -> {step:{...}, sensor:{...}, name, split} with
+    each modality self-contained, its OWN offset, and junk (raw/coord) dropped."""
+    from pimm_data import collate_fn
+    ds = JAXTPCDataset(
+        data_root=jaxtpc_data_root, split='', dataset_name='sim',
+        modalities=('step', 'sensor'), labels='pdg', min_deposits=0, max_len=2,
+        transform=[dict(type='Collect', modalities={
+            'step':   dict(keys=('coord', 'segment'), feat_keys=('coord', 'energy')),
+            'sensor': dict(keys=('wire', 'time', 'value', 'plane_gid')),
+        })])
+    batch = collate_fn([ds[0], ds[1]])
+
+    assert set(batch) == {'step', 'sensor', 'name', 'split'}          # namespaced
+    assert set(batch['step']) >= {'coord', 'segment', 'feat', 'offset'}
+    assert set(batch['sensor']) == {'wire', 'time', 'value', 'plane_gid', 'offset'}
+    assert 'raw' not in batch['sensor'] and 'coord' not in batch['sensor']  # junk gone
+    # each modality has its OWN cumulative offset (B,), matching its row count
+    assert batch['step']['offset'].shape == (2,)
+    assert batch['sensor']['offset'].shape == (2,)
+    assert int(batch['step']['offset'][-1]) == batch['step']['coord'].shape[0]
+    assert int(batch['sensor']['offset'][-1]) == batch['sensor']['wire'].shape[0]
+    assert batch['step']['coord'].shape[1] == 3 and batch['sensor']['wire'].ndim == 1
+
+
+def test_collect_rejects_both_forms():
+    import pytest
+    from pimm_data.transform import Collect
+    with pytest.raises(AssertionError):
+        Collect(keys=['coord'], modalities={'step': dict(keys=['coord'])})
+
+
 def test_g2_bare_collect_passes_name_split():
     # modality=None (bare) Collect must still carry the identity keys.
     data = {'coord': np.zeros((3, 3), np.float32), 'name': 'evt0', 'split': 'train'}

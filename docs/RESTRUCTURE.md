@@ -526,3 +526,21 @@ unconditional `name`. Name all three collate fns (`collate_fn`/`point_collate_fn
 - `AggregateSensorHits`: still on the live LUCiD SSL path, or orphaned (→ delete Phase 5)?
 - `point_collate_fn`: does any config set `mix_prob>0`? If not, it `==` `collate_fn` → drop it.
 - GridSample `min/max/mean/first` reducers: any used, or is `sum` the only one in production?
+
+### Known pre-existing issue — coherent-noise port drift (Phase-3 PREREQUISITE)
+Discovered during implementation (fails on pristine `master`, unrelated to the
+rename/labels work): `test_reconcile_coherent_bitexact_with_jaxtpc` +
+`test_coherent_batched_matches_jaxtpc[2048/4321]` compare pimm-data's
+`coherent_noise` port against the JAXTPC oracle (`/sdf/.../JAXTPC/tools/
+coherent_noise.py`) and now mismatch at `atol=1e-5`. This is the load-bearing
+"coherent bit-exact vs JAXTPC" parity invariant (§6); if the port has drifted
+from the SoT, **the committed C4 denoise path (Phase 3/4) would train on the
+wrong noise.** Two coupled fixes, to be done as a dedicated noise-parity pass
+**before the dense noise path is trusted (gate on Phase 3):**
+1. Reconcile the `coherent_noise` numpy port to the JAXTPC SoT (diff the two,
+   re-sync; JAXTPC is canonical per §5).
+2. Harden `_import_jaxtpc` against the `tools` namespace collision (verify the
+   imported `tools.coherent_noise.__file__` is under the JAXTPC root) so the
+   parity test is deterministic, not order-flaky. (Fix this WITH #1 — alone it
+   just makes the red deterministic.)
+Until then these 3 tests are kept deselected in the green-gate (not forgotten).

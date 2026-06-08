@@ -53,7 +53,7 @@ from .readers.lucid_labl import LUCiDLablReader
 
 @DATASETS.register_module()
 class LUCiDDataset(ShardEventDataset):
-    """Water Cherenkov multimodal dataset with nested per-stream output.
+    """Water Cherenkov multimodal dataset with nested per-modality output.
 
     Parameters
     ----------

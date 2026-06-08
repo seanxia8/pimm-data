@@ -31,8 +31,8 @@ unprefixed keys::
     }
 
 Missing modalities have no top-level key. There is no bare ``coord`` / no
-precedence / no prefixed aliases — transforms pick a stream explicitly (see
-``ApplyToStream`` and ``Collect(stream=...)``).
+precedence / no prefixed aliases — transforms pick a modality explicitly (see
+``ApplyToModality`` and ``Collect(modality=...)``).
 
 Registered in :data:`pimm_data.DATASETS` for config-driven construction
 via ``dict(type="JAXTPCDataset", ...)``.
@@ -91,7 +91,7 @@ def canonical_plane_id(label):
 
 @DATASETS.register_module()
 class JAXTPCDataset(ShardEventDataset):
-    """LArTPC multimodal dataset with nested per-stream output.
+    """LArTPC multimodal dataset with nested per-modality output.
 
     Parameters
     ----------

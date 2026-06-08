@@ -351,8 +351,8 @@ class MultiModalEventDataset(Dataset):
         sample['name'] = self.get_data_name(idx)
         sample['split'] = self.split
         # Per-event labels: top-level length-1 (probe per-event path) AND
-        # per-point broadcast into each point-bearing stream so a downstream
-        # Collect(stream=...) carries them (D28 event_broadcast).
+        # per-point broadcast into each point-bearing modality so a downstream
+        # Collect(modality=...) carries them (D28 event_broadcast).
         label = source['label']
         config_id = source['config_id']
         sample['event_label'] = np.array([label], dtype=np.int64)

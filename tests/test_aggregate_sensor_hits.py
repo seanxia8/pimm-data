@@ -1,7 +1,7 @@
 """AggregateSensorHits: per-PMT aggregation of a LUCiD sensor event.
 
 Replaces the inline LUCiDEventSSLDataset aggregation (D32 dissolve). Groups the
-sensor stream by sensor_idx, sums PE, aggregates time per strategy, and lifts
+sensor modality by sensor_idx, sums PE, aggregates time per strategy, and lifts
 the result to the top-level flat keys the event-SSL pipeline consumes.
 """
 import numpy as np
@@ -60,5 +60,5 @@ def test_empty_event_is_noop_shape():
 
 def test_operates_in_place_when_already_flat():
     flat = {k: v for k, v in _event()['sensor'].items()}
-    out = AggregateSensorHits(stream='sensor')(flat)   # no 'sensor' key → flat
+    out = AggregateSensorHits(modality='sensor')(flat)   # no 'sensor' key → flat
     assert out['sensor_idx'].tolist() == [2, 5]

@@ -27,7 +27,7 @@ def _ds(root, B=2):
     return JAXTPCDataset(
         data_root=root, split='', dataset_name='sim', modalities=('sensor',),
         max_len=B, wire_lengths_per_plane=_WL,
-        transform=[dict(type='Collect', stream='sensor',
+        transform=[dict(type='Collect', modality='sensor',
                         keys=('wire', 'time', 'value', 'plane_gid'))])
 
 
@@ -269,7 +269,7 @@ def test_densify_under_volume_filter(jaxtpc_data_root):
     ds = JAXTPCDataset(data_root=jaxtpc_data_root, split='', dataset_name='sim',
                        modalities=('sensor',), volume=1, max_len=2,
                        wire_lengths_per_plane=_WL,
-                       transform=[dict(type='Collect', stream='sensor',
+                       transform=[dict(type='Collect', modality='sensor',
                                        keys=('wire', 'time', 'value', 'plane_gid'))])
     batch = collate_fn([ds[0], ds[1]])
     ds.get_data(0)

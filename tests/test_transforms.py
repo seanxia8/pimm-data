@@ -46,13 +46,13 @@ def test_compose_rejects_non_callable_non_dict():
 
 
 def test_transforms_registered_count():
-    # 31 from transform.py + PDGToSemantic/RemapSegment/ApplyToStream/
+    # 31 from transform.py + PDGToSemantic/RemapSegment/ApplyToModality/
     # AggregateSensorHits from detector_transforms.py = 35, after the
     # boundary-refactor drops (PR-A) and the SSL move to pimm (PR-C).
     assert len(TRANSFORMS) >= 33
     # A few anchor cases
     for name in ('ToTensor', 'GridSample', 'Collect', 'NormalizeCoord',
-                 'RandomRotate', 'PDGToSemantic', 'ApplyToStream',
+                 'RandomRotate', 'PDGToSemantic', 'ApplyToModality',
                  'RemapSegment'):
         assert TRANSFORMS.get(name) is not None, f"{name} missing"
 
@@ -67,15 +67,15 @@ def test_build_dataset_resolves_by_type(jaxtpc_data_root):
 
 
 def test_end_to_end_transform_collate(jaxtpc_data_root):
-    """Pipeline: ApplyToStream scopes per-cloud transforms, Collect flattens."""
+    """Pipeline: ApplyToModality scopes per-cloud transforms, Collect flattens."""
     transform = [
-        dict(type='ApplyToStream', stream='step', transforms=[
+        dict(type='ApplyToModality', modality='step', transforms=[
             dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
             dict(type='GridSample', grid_size=0.001, hash_type='fnv',
                  mode='train', return_grid_coord=True),
         ]),
         dict(type='ToTensor'),
-        dict(type='Collect', stream='step',
+        dict(type='Collect', modality='step',
              keys=('coord', 'grid_coord', 'segment'),
              feat_keys=('coord', 'energy')),
     ]

@@ -71,7 +71,7 @@ def densify(wire, time, value, plane_id, offset, geom):
     plane_id = plane_id.reshape(-1)
     n = wire.numel()
     # length consistency: a coord-mutating/subsampling transform (e.g. GridSample)
-    # on the sensor stream before densify desyncs the flat scatter inputs from
+    # on the sensor modality before densify desyncs the flat scatter inputs from
     # `offset` (derived from coord) — catch it loudly rather than silently
     # scatter a corrupted grid.
     if not (time.numel() == n and value.numel() == n and plane_id.numel() == n):
@@ -82,7 +82,7 @@ def densify(wire, time, value, plane_id, offset, geom):
     if B and int(offset[-1]) != n:
         raise ValueError(
             f"densify: offset total ({int(offset[-1])}) != n hits ({n}) — a "
-            "coord-mutating transform likely ran on the sensor stream before "
+            "coord-mutating transform likely ran on the sensor modality before "
             "densify; densify needs the immutable raw COO.")
     # every plane present in the batch must be in the geometry registry, else its
     # hits would be silently dropped (registry built from too few events / config).

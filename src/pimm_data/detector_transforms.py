@@ -11,17 +11,17 @@ unmapped values. Typical use: after loading with ``label_key='pdg'``
 class indices before loss. Works for any int-valued segment column
 (pdg, interaction, cluster) — not PDG-specific.
 
-``Densify`` / ``AddNoise`` / ``Digitize``: the dense sensor-stream chain. The
+``Densify`` / ``AddNoise`` / ``Digitize``: the dense sensor-modality chain. The
 full forward path mirrors production ``make_noisy``::
 
-    ApplyToStream(stream='sensor', transforms=[
+    ApplyToModality(modality='sensor', transforms=[
         dict(type='Densify'),    # sparse COO -> dense (n_wires, n_ticks)
         dict(type='AddNoise'),   # img += generate_noise(...)  (incoherent/coherent)
         dict(type='Digitize'),   # round(img+pedestal).clip(0, adc_max) - pedestal
     ])
 
 All three operate on the ``sensor`` sub-dict — wrap them in
-``ApplyToStream(stream='sensor', transforms=[...])``.
+``ApplyToModality(modality='sensor', transforms=[...])``.
 """
 
 import hashlib
@@ -40,42 +40,42 @@ _NAMED_SCHEMES = {
 
 
 @TRANSFORMS.register_module()
-class ApplyToStream:
-    """Dispatch a sub-pipeline to a nested sub-dict keyed by ``stream``.
+class ApplyToModality:
+    """Dispatch a sub-pipeline to a nested sub-dict keyed by ``modality``.
 
     :class:`JAXTPCDataset` emits nested dicts of the form
     ``{'step': {'coord': ..., 'segment': ...}, 'hits': {...}, ...}``.
     Wrap transforms that hardcode ``'coord'`` / ``'segment'`` in
-    ``ApplyToStream(stream='step', transforms=[...])`` so they operate
+    ``ApplyToModality(modality='step', transforms=[...])`` so they operate
     on the sub-dict directly::
 
-        dict(type='ApplyToStream', stream='step', transforms=[
+        dict(type='ApplyToModality', modality='step', transforms=[
             dict(type='GridSample', grid_size=0.5),
             dict(type='RandomRotate'),
         ])
 
-    If ``data_dict`` has no ``stream`` key, the transform is a no-op.
+    If ``data_dict`` has no ``modality`` key, the transform is a no-op.
     This lets a single config run through optional streams without
     branching on modality presence.
     """
 
-    def __init__(self, stream, transforms=None, required=False):
+    def __init__(self, modality, transforms=None, required=False):
         if transforms is None:
             transforms = []
-        self.stream = stream
+        self.modality = modality
         self.required = bool(required)
         self.inner = Compose(transforms) if transforms else None
 
     def __call__(self, data_dict):
-        if self.stream not in data_dict:
+        if self.modality not in data_dict:
             if self.required:
                 raise KeyError(
-                    f"ApplyToStream(stream={self.stream!r}) applied but "
-                    f"data_dict has no such stream; "
+                    f"ApplyToModality(modality={self.modality!r}) applied but "
+                    f"data_dict has no such modality; "
                     f"available: {sorted(k for k in data_dict if isinstance(data_dict.get(k), dict))}")
             return data_dict
         if self.inner is not None:
-            data_dict[self.stream] = self.inner(data_dict[self.stream])
+            data_dict[self.modality] = self.inner(data_dict[self.modality])
         return data_dict
 
 
@@ -228,7 +228,7 @@ class AggregateSensorHits:
     A raw LUCiD ``sensor`` event has several hits per PMT; this groups by
     ``sensor_idx`` and emits one point per PMT — ``coord`` (the shared PMT
     position), ``energy`` (summed PE), ``time`` (aggregated by
-    ``time_aggregation``), ``sensor_idx`` (unique). It reads the ``stream``
+    ``time_aggregation``), ``sensor_idx`` (unique). It reads the ``modality``
     sub-dict (``MultiModalEventDataset`` emits nested dicts) and writes the
     aggregated arrays to the **top level** — the flat ``coord``/``energy``/
     ``time`` keys the event-SSL pipeline consumes — then drops the consumed
@@ -238,20 +238,20 @@ class AggregateSensorHits:
 
     ``time_aggregation`` ∈ ``{'earliest', 'mean', 'pe_weighted', 'first'}``
     (the LUCiDEventSSLDataset set): minimum / count-mean / PE-weighted-mean /
-    first-hit time per PMT. When ``stream`` is absent (already flat) it
+    first-hit time per PMT. When ``modality`` is absent (already flat) it
     operates on the top-level keys in place.
     """
 
     _STRATEGIES = ('earliest', 'mean', 'pe_weighted', 'first')
 
-    def __init__(self, stream='sensor', time_aggregation='earliest',
+    def __init__(self, modality='sensor', time_aggregation='earliest',
                  coord_key='coord', energy_key='energy', time_key='time',
                  sensor_key='sensor_idx'):
         if time_aggregation not in self._STRATEGIES:
             raise ValueError(
                 f"time_aggregation must be one of {self._STRATEGIES}, "
                 f"got {time_aggregation!r}")
-        self.stream = stream
+        self.modality = modality
         self.time_aggregation = time_aggregation
         self.coord_key = coord_key
         self.energy_key = energy_key
@@ -259,7 +259,7 @@ class AggregateSensorHits:
         self.sensor_key = sensor_key
 
     def __call__(self, data_dict):
-        sub = data_dict.get(self.stream)
+        sub = data_dict.get(self.modality)
         src = sub if isinstance(sub, dict) else data_dict
         sensor_idx = src.get(self.sensor_key)
         if sensor_idx is None:
@@ -271,8 +271,8 @@ class AggregateSensorHits:
             np.asarray(src[self.time_key]))
         for k, v in agg.items():
             data_dict[k] = v
-        if isinstance(sub, dict):                 # lift out of the stream
-            data_dict.pop(self.stream, None)
+        if isinstance(sub, dict):                 # lift out of the modality
+            data_dict.pop(self.modality, None)
         return data_dict
 
     def _aggregate(self, sensor_idx, coord, energy, time):
@@ -311,7 +311,7 @@ class Densify:
     """Scatter sparse COO sensor planes into dense ``(n_wires, n_ticks)`` images.
 
     Operates on a ``sensor`` sub-dict (wrap in
-    ``ApplyToStream(stream='sensor', ...)``). Reads ``sub['raw'][label]``
+    ``ApplyToModality(modality='sensor', ...)``). Reads ``sub['raw'][label]``
     (``{'wire', 'time', 'value'}``, already absolute indices + pedestal-
     subtracted by the reader) and the per-plane grid extent from
     ``sub['shape'][label] = (n_wires, n_ticks)``. Writes
@@ -330,7 +330,7 @@ class Densify:
     dtype : str
         Output dtype. Default ``'float32'``.
     on_pixel : {'raise', 'skip'}
-        Behaviour when the stream is pixel readout.
+        Behaviour when the modality is pixel readout.
     require_shape : bool
         If ``True`` (default), raise when a plane has no ``shape`` entry. If
         ``False``, fall back to data-inferred extents (``max+1``) — note this is
@@ -457,7 +457,7 @@ class AddNoise:
         dense = sub.get(self.dense_key)
         if dense is None:
             raise KeyError(
-                f"AddNoise: no {self.dense_key!r} in the sensor stream — run "
+                f"AddNoise: no {self.dense_key!r} in the sensor modality — run "
                 "Densify before AddNoise.")
         rng = self._event_rng(sub.get(self.name_key, ''))
         labels = self.planes if self.planes is not None else list(dense)
@@ -543,7 +543,7 @@ class Digitize:
         dense = sub.get(self.dense_key)
         if dense is None:
             raise KeyError(
-                f"Digitize: no {self.dense_key!r} in the sensor stream — run "
+                f"Digitize: no {self.dense_key!r} in the sensor modality — run "
                 "Densify (and AddNoise) before Digitize.")
         marker = f'_digitized_{self.dense_key}'
         if sub.get(marker):

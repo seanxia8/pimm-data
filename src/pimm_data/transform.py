@@ -169,12 +169,12 @@ def index_operator(data_dict, index, duplicate=False):
 class Collect(object):
     """Pack a flat batch dict for the model from possibly-nested input.
 
-    ``stream=`` scopes the source to ``data_dict[stream]`` before pulling
-    keys. Use it to extract one stream from a nested
+    ``modality=`` scopes the source to ``data_dict[modality]`` before pulling
+    keys. Use it to extract one modality from a nested
     ``{'step': {...}, 'hits': {...}}``-style dict produced by datasets
     that emit multiple point clouds::
 
-        Collect(stream='step', keys=['coord', 'segment'],
+        Collect(modality='step', keys=['coord', 'segment'],
                 feat_keys=['coord', 'energy'])
 
     Output keys stay bare (``coord``, ``segment``, ``feat``, …) so
@@ -186,12 +186,12 @@ class Collect(object):
     instead of pickling the full array.
     """
 
-    def __init__(self, keys, offset_keys_dict=None, stream=None, **kwargs):
+    def __init__(self, keys, offset_keys_dict=None, modality=None, **kwargs):
         if offset_keys_dict is None:
             offset_keys_dict = dict(offset="coord")
         self.keys = keys
         self.offset_keys = offset_keys_dict
-        self.stream = stream
+        self.modality = modality
         self.kwargs = kwargs
 
     @staticmethod
@@ -203,7 +203,7 @@ class Collect(object):
         return v
 
     def __call__(self, data_dict):
-        source = data_dict[self.stream] if self.stream is not None else data_dict
+        source = data_dict[self.modality] if self.modality is not None else data_dict
         data = dict()
         keys = [self.keys] if isinstance(self.keys, str) else self.keys
         for key in keys:
@@ -214,7 +214,7 @@ class Collect(object):
             name = name.removesuffix("_keys") if name.endswith("_keys") else name
             assert isinstance(feat_keys, Sequence) and not isinstance(feat_keys, str)
             data[name] = torch.cat([self._to_tensor(source[key]).float() for key in feat_keys], dim=1)
-        if self.stream is not None:
+        if self.modality is not None:
             for passthrough in ("name", "split"):
                 if passthrough in data_dict and passthrough not in data:
                     data[passthrough] = data_dict[passthrough]

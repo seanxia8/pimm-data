@@ -1,7 +1,7 @@
-"""Which pimm-data transforms work inside ApplyToStream on each stream?
+"""Which pimm-data transforms work inside ApplyToModality on each modality?
 
-For every 'typical' transform and every stream (3D seg, 2D inst, 2D sensor),
-build a tiny pipeline with ApplyToStream + the transform, run it, and check
+For every 'typical' transform and every modality (3D seg, 2D inst, 2D sensor),
+build a tiny pipeline with ApplyToModality + the transform, run it, and check
 the output shape is sensible. This documents — and enforces — the supported
 recipes for using transforms on nested sub-dicts (see README §Using with
 transforms).
@@ -15,7 +15,7 @@ from pimm_data import JAXTPCDataset, Compose, collate_fn
 from pimm_data.transform import TRANSFORMS
 
 
-# --- fixtures: one dataset per stream config ------------------------------
+# --- fixtures: one dataset per modality config ------------------------------
 
 def _ds(root, modalities, **kw):
     defaults = dict(data_root=root, split='', dataset_name='sim',
@@ -46,16 +46,16 @@ def sensor_sample(jaxtpc_data_root):
     return ds.get_data(0)
 
 
-def _run(sample, stream, transforms):
-    """Run transforms inside an ApplyToStream on a fresh copy and return the
+def _run(sample, modality, transforms):
+    """Run transforms inside an ApplyToModality on a fresh copy and return the
     post-transform sub-dict."""
     from copy import deepcopy
     data = deepcopy(sample)
     pipe = Compose([
-        dict(type='ApplyToStream', stream=stream, transforms=transforms),
+        dict(type='ApplyToModality', modality=modality, transforms=transforms),
     ])
     data = pipe(data)
-    return data[stream]
+    return data[modality]
 
 
 # --- spatial transforms on 3D seg -----------------------------------------
@@ -138,7 +138,7 @@ def test_step_3d_positive_shift(step_sample):
 
 
 def test_step_3d_copy(step_sample):
-    """Copy transform duplicates keys within a stream sub-dict."""
+    """Copy transform duplicates keys within a modality sub-dict."""
     out = _run(step_sample, 'step', [
         dict(type='Copy', keys_dict={'coord': 'origin_coord'})])
     assert 'origin_coord' in out
@@ -197,7 +197,7 @@ def test_hits_2d_positive_shift(hits_sample):
     assert (out['coord'] >= 0).all()
 
 
-# --- sensor stream (no labels) --------------------------------------------
+# --- sensor modality (no labels) --------------------------------------------
 
 def test_sensor_2d_grid_sample(sensor_sample):
     out = _run(sensor_sample, 'sensor', [
@@ -243,7 +243,7 @@ def test_recipe_3d_supervised_step(jaxtpc_data_root):
     configs/detector/_base_/jaxtpc_step.py."""
     ds = _ds(jaxtpc_data_root, ('step', 'labl'),
              transform=[
-                 dict(type='ApplyToStream', stream='step', transforms=[
+                 dict(type='ApplyToModality', modality='step', transforms=[
                      dict(type='RemapSegment', scheme='motif_5cls'),
                      dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
                      dict(type='LogTransform', min_val=0.01, max_val=20.0),
@@ -254,7 +254,7 @@ def test_recipe_3d_supervised_step(jaxtpc_data_root):
                      dict(type='RandomFlip', p=0.5),
                  ]),
                  dict(type='ToTensor'),
-                 dict(type='Collect', stream='step',
+                 dict(type='Collect', modality='step',
                       keys=('coord', 'grid_coord', 'segment'),
                       feat_keys=('coord', 'energy')),
              ])
@@ -268,14 +268,14 @@ def test_recipe_2d_supervised_hits(jaxtpc_data_root):
     """2D supervised-on-hits pipeline (hits+labl combo)."""
     ds = _ds(jaxtpc_data_root, ('hits', 'labl'),
              transform=[
-                 dict(type='ApplyToStream', stream='hits', transforms=[
+                 dict(type='ApplyToModality', modality='hits', transforms=[
                      dict(type='RemapSegment', scheme='motif_5cls'),
                      dict(type='GridSample', grid_size=1.0, hash_type='fnv',
                           mode='train', return_grid_coord=True),
                      dict(type='RandomFlip', p=0.5, axes=('x', 'y')),
                  ]),
                  dict(type='ToTensor'),
-                 dict(type='Collect', stream='hits',
+                 dict(type='Collect', modality='hits',
                       keys=('coord', 'grid_coord', 'segment', 'instance'),
                       feat_keys=('coord', 'energy')),
              ])
@@ -287,13 +287,13 @@ def test_recipe_ssl_raw_sensor(jaxtpc_data_root):
     """SSL on raw sensor — no labels flow."""
     ds = _ds(jaxtpc_data_root, ('sensor',),
              transform=[
-                 dict(type='ApplyToStream', stream='sensor', transforms=[
+                 dict(type='ApplyToModality', modality='sensor', transforms=[
                      dict(type='GridSample', grid_size=1.0, mode='train',
                           return_grid_coord=True),
                      dict(type='ShufflePoint'),
                  ]),
                  dict(type='ToTensor'),
-                 dict(type='Collect', stream='sensor',
+                 dict(type='Collect', modality='sensor',
                       keys=('coord', 'grid_coord'),
                       feat_keys=('coord', 'energy')),
              ])
@@ -303,20 +303,20 @@ def test_recipe_ssl_raw_sensor(jaxtpc_data_root):
 
 
 def test_recipe_denoising_sensor_plus_hits(jaxtpc_data_root):
-    """Two ApplyToStream blocks, one per cloud. Both streams transform
+    """Two ApplyToModality blocks, one per cloud. Both streams transform
     independently; Collect pulls whichever becomes the model input."""
     ds = _ds(jaxtpc_data_root, ('sensor', 'hits'),
              transform=[
-                 dict(type='ApplyToStream', stream='sensor', transforms=[
+                 dict(type='ApplyToModality', modality='sensor', transforms=[
                      dict(type='GridSample', grid_size=1.0, mode='train',
                           return_grid_coord=True),
                  ]),
-                 dict(type='ApplyToStream', stream='hits', transforms=[
+                 dict(type='ApplyToModality', modality='hits', transforms=[
                      dict(type='GridSample', grid_size=1.0, mode='train',
                           return_grid_coord=True),
                  ]),
                  dict(type='ToTensor'),
-                 dict(type='Collect', stream='sensor',
+                 dict(type='Collect', modality='sensor',
                       keys=('coord', 'grid_coord'),
                       feat_keys=('coord', 'energy')),
              ])

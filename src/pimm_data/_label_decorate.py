@@ -1,6 +1,6 @@
 """Generic label decoration (Part 04 / D20/D22/D28/D38).
 
-The datasets attach per-point labels to a stream by gathering values from the
+The datasets attach per-point labels to a modality by gathering values from the
 ``labl`` tables through a per-point foreign key. Historically each dataset
 hand-wrote this (one bare ``segment`` + ``instance`` axis). This module
 factors out the gather and drives an **open, multi-axis** schema from a
@@ -73,7 +73,7 @@ def _labl_column(labl, source):
 
 
 def decorate_labels(sub, labl, fk_resolver, label_config):
-    """Attach the named schema keys in ``label_config`` to a stream sub-dict.
+    """Attach the named schema keys in ``label_config`` to a modality sub-dict.
 
     Parameters
     ----------

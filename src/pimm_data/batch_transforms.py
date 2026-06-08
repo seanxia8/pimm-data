@@ -90,23 +90,28 @@ def _batch_size(batch, offset_key='offset'):
 class BatchDensify:
     """Sparse hits -> per-plane dense grids ``batch[dense_key] = {gid: (B,W,T)}``."""
 
-    def __init__(self, geom, *, wire_key='wire', time_key='time', value_key='value',
-                 plane_key='plane_gid', offset_key='offset', dense_key='sensor_dense'):
+    def __init__(self, geom, *, modality=None, wire_key='wire', time_key='time',
+                 value_key='value', plane_key='plane_gid', offset_key='offset',
+                 dense_key='sensor_dense'):
         self.geom = geom
+        self.modality = modality
         self.wire_key, self.time_key, self.value_key = wire_key, time_key, value_key
         self.plane_key, self.offset_key, self.dense_key = plane_key, offset_key, dense_key
 
     def __call__(self, batch, *, seeds=None):
-        batch[self.dense_key] = dense_ops.densify(
-            batch[self.wire_key], batch[self.time_key], batch[self.value_key],
-            batch[self.plane_key], batch[self.offset_key], self.geom)
+        # modality=None → operate on the bare batch (back-compat); modality='X'
+        # → scope to the namespaced batch['X'] sub-dict (multi-modality path).
+        tgt = batch[self.modality] if self.modality is not None else batch
+        tgt[self.dense_key] = dense_ops.densify(
+            tgt[self.wire_key], tgt[self.time_key], tgt[self.value_key],
+            tgt[self.plane_key], tgt[self.offset_key], self.geom)
         return batch
 
 
 class BatchAddIntrinsicNoise:
     """Add fresh per-event coherent (+optional incoherent) noise to the grids."""
 
-    def __init__(self, geom, *, coherent=True, incoherent=False,
+    def __init__(self, geom, *, modality=None, coherent=True, incoherent=False,
                  dense_key='sensor_dense', enc=DEFAULT_ENC,
                  sampling_rate_hz=DEFAULT_SAMPLING_RATE_HZ,
                  group_size=DEFAULT_GROUP_SIZE, coh_rms=DEFAULT_COH_RMS_ADC,
@@ -114,6 +119,7 @@ class BatchAddIntrinsicNoise:
                  coh_spectral_slope=DEFAULT_COH_SLOPE, beta=DEFAULT_COH_BETA,
                  series_spectrum=None):
         self.geom = geom
+        self.modality = modality
         self.coherent, self.incoherent = bool(coherent), bool(incoherent)
         self.dense_key = dense_key
         self.enc = tuple(enc)
@@ -123,8 +129,9 @@ class BatchAddIntrinsicNoise:
                        series_spectrum=series_spectrum)
 
     def __call__(self, batch, *, seeds):
+        tgt = batch[self.modality] if self.modality is not None else batch
         dense_ops.add_intrinsic_noise(
-            batch[self.dense_key], self.geom, seeds=seeds, enc=self.enc,
+            tgt[self.dense_key], self.geom, seeds=seeds, enc=self.enc,
             coherent=self.coherent, incoherent=self.incoherent, **self.kw)
         return batch
 
@@ -132,34 +139,43 @@ class BatchAddIntrinsicNoise:
 class BatchDigitize:
     """Quantize per-plane grids to ADC codes (pedestal from registry or override)."""
 
-    def __init__(self, geom=None, *, pedestal=None, n_bits=12, adc_max=None,
-                 gain=1.0, dense_key='sensor_dense'):
+    def __init__(self, geom=None, *, modality=None, pedestal=None, n_bits=12,
+                 adc_max=None, gain=1.0, dense_key='sensor_dense'):
         self.geom = geom or {}
+        self.modality = modality
         self.pedestal = pedestal
         self.n_bits, self.adc_max, self.gain = n_bits, adc_max, gain
         self.dense_key = dense_key
 
     def __call__(self, batch, *, seeds=None):
+        tgt = batch[self.modality] if self.modality is not None else batch
         ped = self.pedestal
         if ped is None:
             ped = {gid: e.get('pedestal', 0) for gid, e in self.geom.items()}
-        batch[self.dense_key] = dense_ops.digitize(
-            batch[self.dense_key], ped, n_bits=self.n_bits,
+        tgt[self.dense_key] = dense_ops.digitize(
+            tgt[self.dense_key], ped, n_bits=self.n_bits,
             adc_max=self.adc_max, gain=self.gain)
         return batch
 
 
-def build_sensor_gpu_stages(geom, *, coherent=True, incoherent=False, digitize=True,
-                            n_bits=12, dense_key='sensor_dense', **noise_kw):
+def build_sensor_gpu_stages(geom, *, modality=None, coherent=True, incoherent=False,
+                            digitize=True, n_bits=12, dense_key=None, **noise_kw):
     """Convenience: the standard Densify -> AddNoise -> Digitize stage list.
 
     ``geom`` is a canonical-plane-id registry (e.g. ``JAXTPCDataset.plane_geometry()``).
+    ``modality=None`` operates on the bare batch and writes ``batch['sensor_dense']``
+    (back-compat); ``modality='sensor'`` scopes to the namespaced ``batch['sensor']``
+    sub-dict and writes ``batch['sensor']['dense']``.
     """
-    stages = [BatchDensify(geom, dense_key=dense_key),
-              BatchAddIntrinsicNoise(geom, coherent=coherent, incoherent=incoherent,
-                                     dense_key=dense_key, **noise_kw)]
+    if dense_key is None:
+        dense_key = 'dense' if modality is not None else 'sensor_dense'
+    stages = [BatchDensify(geom, modality=modality, dense_key=dense_key),
+              BatchAddIntrinsicNoise(geom, modality=modality, coherent=coherent,
+                                     incoherent=incoherent, dense_key=dense_key,
+                                     **noise_kw)]
     if digitize:
-        stages.append(BatchDigitize(geom, n_bits=n_bits, dense_key=dense_key))
+        stages.append(BatchDigitize(geom, modality=modality, n_bits=n_bits,
+                                    dense_key=dense_key))
     return stages
 
 

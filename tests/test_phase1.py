@@ -100,6 +100,40 @@ def test_sensor_consumed_sparse_no_densify(jaxtpc_data_root):
     assert 'dense' not in batch['sensor']                  # nothing forced dense
 
 
+# --- Phase 3: optional densify scoped to a namespaced modality ------------
+
+def test_dense_stage_scoped_to_namespaced_modality(jaxtpc_data_root):
+    """Densify/noise/digitize scoped to a modality → batch['sensor']['dense'] =
+    {plane_gid:(B,W,T)}, born on the runner's device (CPU here, device-agnostic);
+    other modalities untouched. Seeds come from top-level batch['name']."""
+    import torch
+    from pimm_data import (collate_fn, apply_batch_transforms,
+                           build_sensor_gpu_stages)
+    wl = {'U': (0.42, 4.63), 'V': (0.42, 4.63), 'Y': (2.33, 2.33)}
+    ds = JAXTPCDataset(
+        data_root=jaxtpc_data_root, split='', dataset_name='sim',
+        modalities=('step', 'sensor'), labels='pdg', min_deposits=0, max_len=2,
+        wire_lengths_per_plane=wl,
+        transform=[dict(type='Collect', modalities={
+            'step':   dict(keys=('coord', 'segment'), feat_keys=('coord', 'energy')),
+            'sensor': dict(keys=('wire', 'time', 'value', 'plane_gid')),
+        })])
+    ds.get_data(0)                       # populate reader geometry
+    geom = ds.plane_geometry()
+    batch = collate_fn([ds[0], ds[1]])
+    step_coord = batch['step']['coord'].clone()
+
+    stages = build_sensor_gpu_stages(geom, modality='sensor', coherent=True,
+                                     incoherent=False, digitize=True)
+    out = apply_batch_transforms(batch, stages, device='cpu', base_seed=0, epoch=0)
+
+    grids = out['sensor']['dense']                          # born under sensor
+    assert isinstance(grids, dict) and len(grids) >= 1
+    for g in grids.values():
+        assert g.ndim == 3 and g.shape[0] == 2              # (B, W, T)
+    assert 'dense' not in out['step'] and torch.equal(out['step']['coord'], step_coord)
+
+
 def test_g2_bare_collect_passes_name_split():
     # modality=None (bare) Collect must still carry the identity keys.
     data = {'coord': np.zeros((3, 3), np.float32), 'name': 'evt0', 'split': 'train'}

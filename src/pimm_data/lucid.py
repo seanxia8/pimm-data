@@ -89,6 +89,7 @@ class LUCiDDataset(ShardEventDataset):
         pe_threshold=0.0,
         pmt_positions=None,
         pmt_positions_file=None,
+        labels=None,
         label_config=None,
         transform=None,
         loop=1,
@@ -106,6 +107,19 @@ class LUCiDDataset(ShardEventDataset):
                 f"min_segments={min_segments} filters on step segment counts "
                 f"but modalities={self._modalities} does not include 'step'. "
                 "Add 'step' to modalities or set min_segments=0.")
+
+        # labels= opt-in: labl is a label *source*, not a modality. LUCiD's
+        # columns come from label_config; labels= signals "attach labels" (a
+        # dict may carry config=). Back-compat: 'labl' in modalities= also
+        # requests labels (deprecated — use labels= instead).
+        if isinstance(labels, dict):
+            label_config = labels.get('config', label_config)
+        self._want_labels = (labels is not None) or ('labl' in self._modalities)
+        if self._want_labels and not ({'step', 'hits'} & set(self._modalities)):
+            raise ValueError(
+                "labels were requested (labels=/'labl') but modalities has no "
+                "decoratable point cloud — need 'step' or 'hits'; "
+                f"modalities={self._modalities}.")
 
         self._dataset_name = dataset_name
         self._min_segments = min_segments
@@ -138,7 +152,7 @@ class LUCiDDataset(ShardEventDataset):
                 data_root=self._modality_root('hits'), split=split,
                 dataset_name=dataset_name, pe_threshold=pe_threshold)
 
-        if 'labl' in self._modalities:
+        if self._want_labels:
             self.labl_reader = LUCiDLablReader(
                 data_root=self._modality_root('labl'), split=split,
                 dataset_name=dataset_name)

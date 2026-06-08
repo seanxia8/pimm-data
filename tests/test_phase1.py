@@ -32,6 +32,23 @@ def test_labels_requires_decoratable_modality(jaxtpc_data_root):
         _jds(jaxtpc_data_root, ('sensor',), labels='pdg')
 
 
+def test_lucid_labels_param_matches_legacy(lucid_data_root):
+    """LUCiD: modalities=('hits',), labels=True decorates identically to the
+    legacy modalities=('hits','labl')."""
+    from pimm_data import LUCiDDataset
+
+    def ld(mods, **kw):
+        return LUCiDDataset(data_root=lucid_data_root, split='', dataset_name='wc',
+                            modalities=mods, max_len=2, **kw)
+
+    new = ld(('hits',), labels=True).get_data(0)['hits']
+    old = ld(('hits', 'labl')).get_data(0)['hits']
+    assert set(new) == set(old)
+    for k in ('segment', 'instance'):
+        if k in new:
+            assert _seg_fp(new[k]) == _seg_fp(old[k])
+
+
 def test_g2_bare_collect_passes_name_split():
     # modality=None (bare) Collect must still carry the identity keys.
     data = {'coord': np.zeros((3, 3), np.float32), 'name': 'evt0', 'split': 'train'}

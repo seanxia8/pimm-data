@@ -214,10 +214,14 @@ class Collect(object):
             name = name.removesuffix("_keys") if name.endswith("_keys") else name
             assert isinstance(feat_keys, Sequence) and not isinstance(feat_keys, str)
             data[name] = torch.cat([self._to_tensor(source[key]).float() for key in feat_keys], dim=1)
-        if self.modality is not None:
-            for passthrough in ("name", "split"):
-                if passthrough in data_dict and passthrough not in data:
-                    data[passthrough] = data_dict[passthrough]
+        # G2: name/split are the cross-boundary identity carriers — content-
+        # addressed seeding reads top-level ``batch['name']``. Pass them through
+        # UNCONDITIONALLY (whether or not a modality scope is set); a bare
+        # ``Collect`` previously dropped them, silently degrading seed
+        # reproducibility to batch position.
+        for passthrough in ("name", "split"):
+            if passthrough in data_dict and passthrough not in data:
+                data[passthrough] = data_dict[passthrough]
         return data
 
 

@@ -203,11 +203,20 @@ def _import_jaxtpc():
         if root and os.path.isdir(os.path.join(root, 'tools')):
             if root not in sys.path:
                 sys.path.insert(0, root)
+            # evict a foreign cached `tools` (namespace collision) so this
+            # resolves to JAXTPC's parity oracle regardless of import order.
+            for m in [k for k in list(sys.modules)
+                      if k == 'tools' or k.startswith('tools.')]:
+                f = getattr(sys.modules[m], '__file__', None) or ''
+                if not f.startswith(root):
+                    del sys.modules[m]
             try:
                 import tools.coherent_noise as cn
-                return cn
             except Exception:
                 return None
+            if not (getattr(cn, '__file__', '') or '').startswith(root):
+                return None
+            return cn
     return None
 
 

@@ -537,23 +537,18 @@ unconditional `name`. Name all three collate fns (`collate_fn`/`point_collate_fn
 - `point_collate_fn`: does any config set `mix_prob>0`? If not, it `==` `collate_fn` → drop it.
 - GridSample `min/max/mean/first` reducers: any used, or is `sum` the only one in production?
 
-### Known pre-existing issue — coherent-noise port drift (Phase-3 PREREQUISITE)
-Discovered during implementation (fails on pristine `master`, unrelated to the
-rename/labels work): `test_reconcile_coherent_bitexact_with_jaxtpc` +
-`test_coherent_batched_matches_jaxtpc[2048/4321]` compare pimm-data's
-`coherent_noise` port against the JAXTPC oracle (`/sdf/.../JAXTPC/tools/
-coherent_noise.py`) and now mismatch at `atol=1e-5`. This is the load-bearing
-"coherent bit-exact vs JAXTPC" parity invariant (§6); if the port has drifted
-from the SoT, **the committed C4 denoise path (Phase 3/4) would train on the
-wrong noise.** Two coupled fixes, to be done as a dedicated noise-parity pass
-**before the dense noise path is trusted (gate on Phase 3):**
-1. Reconcile the `coherent_noise` numpy port to the JAXTPC SoT (diff the two,
-   re-sync; JAXTPC is canonical per §5).
-2. Harden `_import_jaxtpc` against the `tools` namespace collision (verify the
-   imported `tools.coherent_noise.__file__` is under the JAXTPC root) so the
-   parity test is deterministic, not order-flaky. (Fix this WITH #1 — alone it
-   just makes the red deterministic.)
-Until then these 3 tests are kept deselected in the green-gate (not forgotten).
+### Coherent-noise "drift" — RESOLVED (was a test-infra collision, NOT a port drift)
+Investigated: there is **no** port drift. pimm-data's `coherent_noise` matches the JAXTPC
+oracle to **max abs 9.5e-7** (well inside the test's `atol=1e-5`) when JAXTPC's `tools` is
+imported cleanly. The 3 failures (`test_reconcile_coherent_bitexact_with_jaxtpc`,
+`test_coherent_batched_matches_jaxtpc[2048/4321]`) were entirely a **`tools` namespace
+collision**: `_import_jaxtpc` did `import tools.coherent_noise`, which — depending on test
+order — resolved to a *foreign/stale* `tools` already cached in `sys.modules`, so the
+comparison ran against the wrong module. **Fixed** by hardening both `_import_jaxtpc`
+helpers (test_noise, test_batch_transforms) to evict any cached `tools[.*]` not loaded from
+the JAXTPC root and verify the resolved module's `__file__`. Suite is now fully green with
+**no deselects**; the "coherent bit-exact vs JAXTPC" invariant (§6) holds, so this is **not**
+a Phase-3 prerequisite. (The port is faithful; nothing to reconcile.)
 
 ### Labels reclassification — as-built + a corrected estimate
 Delivered (green): `labels=` opt-in on **both** `JAXTPCDataset` and `LUCiDDataset`

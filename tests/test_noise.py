@@ -393,12 +393,24 @@ def _import_jaxtpc():
         if root and os.path.isdir(os.path.join(root, 'tools')):
             if root not in sys.path:
                 sys.path.insert(0, root)
+            # Namespace-collision guard: another `tools` package on sys.path
+            # (e.g. pimm's) may already be cached in sys.modules, shadowing
+            # JAXTPC's. Evict any cached `tools[.*]` not loaded from this root so
+            # the import below resolves to JAXTPC's (the parity oracle). Without
+            # this the comparison silently ran against the wrong module.
+            for m in [k for k in list(sys.modules)
+                      if k == 'tools' or k.startswith('tools.')]:
+                f = getattr(sys.modules[m], '__file__', None) or ''
+                if not f.startswith(root):
+                    del sys.modules[m]
             try:
                 import tools.coherent_noise as cn
                 import tools.noise as nz
-                return cn, nz, root
             except Exception:
                 return None
+            if not (getattr(cn, '__file__', '') or '').startswith(root):
+                return None  # got a foreign `tools`, treat as unavailable
+            return cn, nz, root
     return None
 
 

@@ -40,6 +40,8 @@ dimension table and needs an instance-bearing modality (``step`` or
 Registered in :data:`pimm_data.DATASETS`.
 """
 
+import warnings
+
 import numpy as np
 
 from .builder import DATASETS
@@ -120,6 +122,17 @@ class LUCiDDataset(ShardEventDataset):
                 "labels were requested (labels=/'labl') but modalities has no "
                 "decoratable point cloud — need 'step' or 'hits'; "
                 f"modalities={self._modalities}.")
+        # Make the silent labels-skip-<modality> coupling loud (see JAXTPCDataset):
+        # only 'step'/'hits' are decoratable; other requested modalities pass raw.
+        if self._want_labels:
+            _undecorated = [m for m in self._modalities
+                            if m not in ('step', 'hits', 'labl')]
+            if _undecorated:
+                warnings.warn(
+                    f"labels= was requested but modality/-ies {_undecorated} are "
+                    "not label-decoratable (only 'step'/'hits' receive "
+                    "segment/instance) — they pass through raw, with no labels.",
+                    stacklevel=2)
 
         self._dataset_name = dataset_name
         self._min_segments = min_segments

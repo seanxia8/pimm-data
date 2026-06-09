@@ -144,3 +144,15 @@ def test_densify_namespaced_default_lands_in_modality_dense():
     batch = {'sensor': _tiny_sensor_batch()}
     out = BatchDensify(geom, modality='sensor')(batch)      # no dense_key=
     assert 'dense' in out['sensor'] and 'sensor_dense' not in out['sensor']
+
+
+def test_densify_coord_mutation_coupling_is_loud():
+    """The #1 dense coupling: a coord-mutating transform desyncs the COO from
+    offset. BatchDensify names the modality and the fix — clearer than the
+    generic dense_ops guard."""
+    from pimm_data.batch_transforms import BatchDensify
+    geom = {0: {'n_wires': 4, 'n_ticks': 5}}
+    sub = _tiny_sensor_batch()
+    sub['offset'] = torch.tensor([1, 2])           # total 2 != 3 COO rows (subsampled)
+    with pytest.raises(ValueError, match=r"BatchDensify\('sensor'\).*coord-mutating"):
+        BatchDensify(geom, modality='sensor')({'sensor': sub})

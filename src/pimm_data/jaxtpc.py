@@ -40,6 +40,7 @@ via ``dict(type="JAXTPCDataset", ...)``.
 
 import re
 import logging
+import warnings
 
 import numpy as np
 
@@ -189,6 +190,19 @@ class JAXTPCDataset(ShardEventDataset):
                 "labels were requested (labels=/'labl') but modalities has no "
                 "decoratable point cloud — need 'step' or 'hits'; "
                 f"modalities={self._modalities}.")
+        # Make the silent labels-skip-<modality> coupling loud: only 'step'/'hits'
+        # are FK-decoratable; any OTHER requested modality (e.g. 'sensor' — raw
+        # readout, no instance separation) passes through with no segment/instance.
+        if self._want_labels:
+            _undecorated = [m for m in self._modalities
+                            if m not in ('step', 'hits', 'labl')]
+            if _undecorated:
+                warnings.warn(
+                    f"labels= was requested but modality/-ies {_undecorated} are "
+                    "not label-decoratable (only 'step'/'hits' receive "
+                    "segment/instance) — they pass through raw, with no labels. "
+                    "Expected for 'sensor' (raw readout); flagged so you don't "
+                    "rely on supervision that isn't there.", stacklevel=2)
 
         self._dataset_name = dataset_name
         self._volume = volume

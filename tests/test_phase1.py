@@ -32,6 +32,22 @@ def test_labels_requires_decoratable_modality(jaxtpc_data_root):
         _jds(jaxtpc_data_root, ('sensor',), labels='pdg')
 
 
+def test_labels_warns_on_undecorated_modality(jaxtpc_data_root):
+    """labels= + a non-decoratable modality (sensor) is legal but WARNS — the
+    silent 'sensor isn't labelled' coupling made loud."""
+    import pytest
+    with pytest.warns(UserWarning, match="not label-decoratable"):
+        _jds(jaxtpc_data_root, ('step', 'sensor'), labels='pdg')
+
+
+def test_labels_no_warn_when_all_decoratable(jaxtpc_data_root):
+    """No warning when every requested modality is decoratable (step/hits)."""
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter('error')                 # any warning -> failure
+        _jds(jaxtpc_data_root, ('step',), labels='pdg').get_data(0)
+
+
 def test_lucid_labels_param_matches_legacy(lucid_data_root):
     """LUCiD: modalities=('hits',), labels=True decorates identically to the
     legacy modalities=('hits','labl')."""

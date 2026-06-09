@@ -174,6 +174,20 @@ class BatchDensify:
         # modality=None → operate on the bare batch (back-compat); modality='X'
         # → scope to the namespaced batch['X'] sub-dict (multi-modality path).
         tgt = batch[self.modality] if self.modality is not None else batch
+        # Clear, modality-named signal for the #1 dense coupling: a coord-mutating
+        # transform (GridSample/SphereCrop/RandomDropout) on this modality
+        # pre-collate desyncs the raw COO from `offset`. Catch it here — before the
+        # generic dense_ops guard — naming the modality and the fix.
+        m = self.modality if self.modality is not None else '<bare batch>'
+        n = tgt[self.wire_key].reshape(-1).shape[0]
+        off = tgt[self.offset_key]
+        if off.numel() and int(off[-1]) != n:
+            raise ValueError(
+                f"BatchDensify({m!r}): offset total {int(off[-1])} != {n} raw-COO "
+                f"rows ({self.wire_key!r}). A coord-mutating transform "
+                "(GridSample/SphereCrop/RandomDropout) ran on this modality "
+                "pre-collate — densify needs the raw COO aligned with offset. "
+                "Voxelize a SEPARATE sparse view, not the one you densify.")
         tgt[self.dense_key] = dense_ops.densify(
             tgt[self.wire_key], tgt[self.time_key], tgt[self.value_key],
             tgt[self.plane_key], tgt[self.offset_key], self.geom)

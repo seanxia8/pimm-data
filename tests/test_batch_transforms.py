@@ -157,8 +157,8 @@ def test_apply_batch_transforms_end_to_end(jaxtpc_data_root):
     stages = build_sensor_gpu_stages(geom, coherent=True, incoherent=True, n_bits=12)
     out = apply_batch_transforms(deepcopy(batch), stages, device='cpu',
                                  base_seed=0, epoch=0, rank=0)
-    assert 'sensor_dense' in out
-    for gid, g in out['sensor_dense'].items():
+    assert 'dense' in out
+    for gid, g in out['dense'].items():
         assert g.shape[0] == 2
         assert g.shape[1:] == (geom[gid]['n_wires'], geom[gid]['n_ticks'])
         ped = geom[gid].get('pedestal', 0)
@@ -174,15 +174,15 @@ def test_apply_batch_transforms_per_event_reproducible(jaxtpc_data_root):
     a = apply_batch_transforms(deepcopy(batch), mk(), device='cpu', base_seed=5)
     b = apply_batch_transforms(deepcopy(batch), mk(), device='cpu', base_seed=5)
     c = apply_batch_transforms(deepcopy(batch), mk(), device='cpu', base_seed=6)
-    g0 = sorted(a['sensor_dense'])[0]
-    assert torch.equal(a['sensor_dense'][g0], b['sensor_dense'][g0])
-    assert not torch.equal(a['sensor_dense'][g0], c['sensor_dense'][g0])
+    g0 = sorted(a['dense'])[0]
+    assert torch.equal(a['dense'][g0], b['dense'][g0])
+    assert not torch.equal(a['dense'][g0], c['dense'][g0])
 
 
 def test_empty_stages_is_move_only(jaxtpc_data_root):
     _, batch = _sensor_batch(jaxtpc_data_root, B=2)
     out = apply_batch_transforms(deepcopy(batch), [], device='cpu')
-    assert 'sensor_dense' not in out
+    assert 'dense' not in out
     assert torch.equal(out['wire'], batch['wire'])
 
 
@@ -354,7 +354,7 @@ def test_end_to_end_on_cuda(jaxtpc_data_root):
     geom = ds.plane_geometry()
     stages = build_sensor_gpu_stages(geom, coherent=True, incoherent=True, n_bits=12)
     out = apply_batch_transforms(deepcopy(batch), stages, device='cuda', base_seed=0)
-    for gid, g in out['sensor_dense'].items():
+    for gid, g in out['dense'].items():
         assert g.device.type == 'cuda'
         assert torch.allclose(g, torch.round(g))  # digitized
 

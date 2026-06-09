@@ -114,3 +114,33 @@ def test_compose_rejects_todevice():
     """ToDevice is scope='batch' → the pre-collate fence rejects it too."""
     with pytest.raises(ValueError, match="scope='batch'"):
         Compose([dict(type='ToDevice', device='cpu')])
+
+
+# --- densify output key is neutral + modality-agnostic (no sensor assumption) ---
+
+def _tiny_sensor_batch():
+    # 2 events, one plane (gid 0), a 4x5 grid; event0 has 2 hits, event1 has 1.
+    return dict(
+        wire=torch.tensor([0, 3, 1]), time=torch.tensor([1, 4, 2]),
+        value=torch.tensor([9., 7., 5.]), plane_gid=torch.tensor([0, 0, 0]),
+        offset=torch.tensor([2, 3]), name=['a', 'b'])
+
+
+def test_densify_default_key_is_neutral_dense():
+    """BatchDensify writes the neutral 'dense' key — NO 'sensor_dense', and it works
+    for ANY modality (densify isn't sensor-specific). Bare batch -> batch['dense']."""
+    from pimm_data.batch_transforms import BatchDensify
+    geom = {0: {'n_wires': 4, 'n_ticks': 5}}
+    out = BatchDensify(geom)(_tiny_sensor_batch())          # bare, no dense_key=
+    assert 'dense' in out and 'sensor_dense' not in out
+    assert out['dense'][0].shape == (2, 4, 5)
+
+
+def test_densify_namespaced_default_lands_in_modality_dense():
+    """modality='sensor' with NO dense_key= now lands at batch['sensor']['dense']
+    (the de-footgunned default), not batch['sensor']['sensor_dense']."""
+    from pimm_data.batch_transforms import BatchDensify
+    geom = {0: {'n_wires': 4, 'n_ticks': 5}}
+    batch = {'sensor': _tiny_sensor_batch()}
+    out = BatchDensify(geom, modality='sensor')(batch)      # no dense_key=
+    assert 'dense' in out['sensor'] and 'sensor_dense' not in out['sensor']

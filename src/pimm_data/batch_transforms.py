@@ -164,7 +164,7 @@ class BatchDensify:
 
     def __init__(self, geom, *, modality=None, wire_key='wire', time_key='time',
                  value_key='value', plane_key='plane_gid', offset_key='offset',
-                 dense_key='sensor_dense'):
+                 dense_key='dense'):
         self.geom = geom
         self.modality = modality
         self.wire_key, self.time_key, self.value_key = wire_key, time_key, value_key
@@ -187,7 +187,7 @@ class BatchAddIntrinsicNoise:
     scope = 'batch'  # operates on the batched dense grid
 
     def __init__(self, geom, *, modality=None, coherent=True, incoherent=False,
-                 dense_key='sensor_dense', enc=DEFAULT_ENC,
+                 dense_key='dense', enc=DEFAULT_ENC,
                  sampling_rate_hz=DEFAULT_SAMPLING_RATE_HZ,
                  group_size=DEFAULT_GROUP_SIZE, coh_rms=DEFAULT_COH_RMS_ADC,
                  coh_corner_freq_hz=DEFAULT_COH_CORNER_FREQ_HZ,
@@ -218,7 +218,7 @@ class BatchDigitize:
     scope = 'batch'  # operates on the batched dense grid
 
     def __init__(self, geom=None, *, modality=None, pedestal=None, n_bits=12,
-                 adc_max=None, gain=1.0, dense_key='sensor_dense'):
+                 adc_max=None, gain=1.0, dense_key='dense'):
         self.geom = geom or {}
         self.modality = modality
         self.pedestal = pedestal
@@ -285,14 +285,20 @@ def sensor_dense_cfg(geom, *, modality='sensor', device=None, coherent=True,
             my_user_gpu_fn,
         ])
 
-    ``geom`` is a canonical-plane-id registry (``JAXTPCDataset.plane_geometry()`` or
-    ``load_plane_registry(json)``). Pass ``device=`` to prepend a ``ToDevice`` stage
-    (the device-as-transform path) instead of the ``apply_batch_transforms(device=)``
-    argument. ``modality='sensor'`` writes ``batch['sensor']['dense']``;
-    ``modality=None`` operates on the bare batch (writes ``batch['sensor_dense']``).
+    Densify is **opt-in** and the sparse COO is **never** replaced — the dense grid
+    is an *added view* (``batch[modality]['dense']`` alongside ``wire/time/value``),
+    so a modality can be consumed sparse, dense, or both. Nothing here is sensor-
+    specific except the convenience name: ``BatchDensify`` densifies *any* sparse
+    modality. ``geom`` is a canonical-plane-id registry
+    (``JAXTPCDataset.plane_geometry()`` or ``load_plane_registry(json)``). Pass
+    ``device=`` to prepend a ``ToDevice`` stage (the device-as-transform path)
+    instead of the ``apply_batch_transforms(device=)`` argument. The output key is
+    the neutral, modality-agnostic ``'dense'`` (override via ``dense_key=``):
+    ``modality='sensor'`` -> ``batch['sensor']['dense']``; ``modality=None`` ->
+    ``batch['dense']``.
     """
     if dense_key is None:
-        dense_key = 'dense' if modality is not None else 'sensor_dense'
+        dense_key = 'dense'
     cfg = []
     if device is not None:
         cfg.append(dict(type='ToDevice', device=device))
@@ -312,7 +318,9 @@ def build_sensor_gpu_stages(geom, *, modality=None, **kw):
 
     Keeps the original ``modality=None`` (bare-batch) default — note
     :func:`sensor_dense_cfg` itself defaults to the namespaced ``modality='sensor'``.
-    Prefer composing your own list with :func:`build_batch_transforms` +
+    The output key is the neutral ``'dense'`` for both (``batch['dense']`` when bare,
+    ``batch[modality]['dense']`` when namespaced) — the old ``'sensor_dense'`` name is
+    gone. Prefer composing your own list with :func:`build_batch_transforms` +
     :func:`sensor_dense_cfg`; this is kept so existing callers keep working.
     """
     return build_batch_transforms(sensor_dense_cfg(geom, modality=modality, **kw))

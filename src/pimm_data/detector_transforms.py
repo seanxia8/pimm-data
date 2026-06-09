@@ -24,6 +24,7 @@ All three operate on the ``sensor`` sub-dict — wrap them in
 ``ApplyToModality(modality='sensor', transforms=[...])``.
 """
 
+import copy
 import hashlib
 
 import numpy as np
@@ -133,6 +134,54 @@ class ApplyToModalities:
                 np.random.set_state(state)
             data_dict[m] = self.inner(data_dict[m])
         return data_dict
+
+
+@TRANSFORMS.register_module()
+class Streams:
+    """Produce several named transform-VIEWS of the same event (the terminal transform).
+
+    A *stream* is the same event run through its own sub-pipeline to feed a distinct
+    model input — orthogonal to a *modality* (a physical channel from a reader):
+    modalities are different data that coexist; streams are the same data processed
+    differently. The canonical use is SSL (two augmented views → a contrastive loss);
+    also multi-scale or per-branch preprocessing.
+
+        dict(type='Streams', streams={
+          'global': [dict(type='ApplyToModality', modality='step', transforms=[aug_heavy]),
+                     dict(type='Collect', modality='step', feat_keys=('coord','energy'))],
+          'local':  [dict(type='ApplyToModality', modality='step', transforms=[aug_light, crop]),
+                     dict(type='Collect', modality='step', feat_keys=('coord','energy'))],
+        })  # -> {'global': {coord,feat,offset}, 'local': {coord,feat,offset}, name, split}
+
+    Each stream runs on a **fresh deep copy** of the event with **independent**
+    randomness (two *different* augmentations — contrast :class:`ApplyToModalities`,
+    which *shares* the draw to keep modalities aligned). Each stream's sub-pipeline
+    should end in :class:`Collect`; its output is namespaced under the stream name,
+    and ``collate_fn``'s Mapping recursion packs the nesting (no collate change). The
+    identity carriers ``name``/``split`` are kept once at the TOP level (seeding reads
+    ``batch['name']``), not duplicated inside each stream.
+    """
+
+    def __init__(self, streams):
+        if not streams:
+            raise ValueError("Streams: needs at least one named stream")
+        if {'name', 'split'} & set(streams):
+            raise ValueError("Streams: stream names 'name'/'split' are reserved")
+        self.streams = {name: Compose(t) for name, t in streams.items()}
+
+    def __call__(self, data_dict):
+        out = {}
+        for name, pipe in self.streams.items():
+            # fresh copy per stream so independent sub-pipelines never alias arrays
+            res = pipe(copy.deepcopy(data_dict))
+            if isinstance(res, dict):
+                for idkey in ('name', 'split'):
+                    res.pop(idkey, None)        # keep identity at top level only
+            out[name] = res
+        for idkey in ('name', 'split'):
+            if idkey in data_dict:
+                out[idkey] = data_dict[idkey]
+        return out
 
 
 @TRANSFORMS.register_module()

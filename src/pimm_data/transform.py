@@ -1308,6 +1308,12 @@ class Compose(object):
         pre-built transform instances, etc.).
 
     Dict and callable entries may be mixed in the same list.
+
+    A transform declares its ``scope`` (default ``'sample'``): ``'sample'`` sees
+    one event and is a pre-collate ``map``; ``'batch'`` needs the collated set
+    (offset, cross-event) and is post-collate only. ``Compose`` is the pre-collate
+    site, so a ``scope='batch'`` entry is rejected here — place it in the
+    post-collate stage list (see :mod:`pimm_data.batch_transforms`) instead.
     """
 
     def __init__(self, cfg=None):
@@ -1315,13 +1321,21 @@ class Compose(object):
         self.transforms = []
         for t_cfg in self.cfg:
             if isinstance(t_cfg, dict):
-                self.transforms.append(TRANSFORMS.build(t_cfg))
+                t = TRANSFORMS.build(t_cfg)
             elif callable(t_cfg):
-                self.transforms.append(t_cfg)
+                t = t_cfg
             else:
                 raise TypeError(
                     "Compose entries must be dict (registry config) or callable, "
                     f"got {type(t_cfg).__name__}")
+            # fence: a scope='batch' transform reads the collated set; it cannot
+            # run per-event in the worker. Catch the misplacement at build time.
+            if getattr(t, 'scope', 'sample') == 'batch':
+                raise ValueError(
+                    f"{type(t).__name__} is scope='batch' (needs the collated "
+                    "set) and cannot run pre-collate in Compose; place it in the "
+                    "post-collate stage list (apply_batch_transforms).")
+            self.transforms.append(t)
 
     def __call__(self, data_dict):
         for t in self.transforms:

@@ -14,6 +14,19 @@ Stages take ``(batch, *, seeds)`` and mutate/return the batch dict:
 * ``BatchAddIntrinsicNoise`` — fresh coherent (+optional incoherent) noise per event
 * ``BatchDigitize``     — quantize to ADC codes
 
+**User stages (the post-collate half of the uniform-transform path).** A stage is
+just a callable. pimm-data's own stages take ``(batch, *, seeds)``; a *user* stage
+is a bare ``fn(batch) -> batch`` (a lambda, an ``nn.Module``, a pre-built object) —
+the runner inspects the signature (:func:`_accepts_seeds`) and omits ``seeds`` when
+the callable doesn't declare it, so a GPU op is first-class with no registration and
+no ``seeds`` plumbing, exactly like a pre-collate ``Compose`` entry. Contract for a
+user stage: operate on the **collated, on-device** batch (tensors, ``offset``-keyed
+ragged layout); keep any per-point array length-consistent with ``offset``; do not
+drop ``name``/``split`` (the seed-identity carriers); a stage that needs the collated
+set is ``scope='batch'`` (the default for these) and must NOT be placed in ``Compose``
+(the build-time fence rejects it). Anything stateful/learned belongs to the model,
+not here — the runner is an optional convenience, not a required phase.
+
 Seeds are **content-addressed** per event (``blake2b(name) ^ base_seed ^ epoch ^
 rank``), so the same event gets the same noise regardless of **batch position,
 worker, or resume**. Caveats: ``rank`` is folded in to decorrelate DDP replicas,
@@ -29,6 +42,7 @@ through collate.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import warnings
 
 import torch
@@ -86,9 +100,33 @@ def _batch_size(batch, offset_key='offset'):
     return 1
 
 
+def _accepts_seeds(stage):
+    """Does this post-collate stage take a ``seeds=`` kwarg?
+
+    pimm-data's own stages (``BatchDensify`` …) take ``(batch, *, seeds)``; a
+    *user* stage is just a bare callable ``fn(batch) -> batch`` (a lambda, an
+    ``nn.Module``, a pre-built transform), exactly like a pre-collate ``Compose``
+    entry. The runner inspects the signature so both forms are first-class on the
+    post-collate side — no registration, no required ``seeds`` plumbing. A stage
+    with ``**kwargs`` is assumed to absorb ``seeds`` (our protocol); an
+    un-introspectable callable (C/builtin) is assumed to follow the stage protocol.
+    """
+    fn = stage if (inspect.isfunction(stage) or inspect.ismethod(stage)) \
+        else getattr(stage, '__call__', stage)
+    try:
+        params = inspect.signature(fn).parameters
+    except (ValueError, TypeError):
+        return True
+    if 'seeds' in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 # ── stages ─────────────────────────────────────────────────────────────────
 class BatchDensify:
     """Sparse hits -> per-plane dense grids ``batch[dense_key] = {gid: (B,W,T)}``."""
+
+    scope = 'batch'  # needs the collated set (B, offset) — post-collate only
 
     def __init__(self, geom, *, modality=None, wire_key='wire', time_key='time',
                  value_key='value', plane_key='plane_gid', offset_key='offset',
@@ -110,6 +148,8 @@ class BatchDensify:
 
 class BatchAddIntrinsicNoise:
     """Add fresh per-event coherent (+optional incoherent) noise to the grids."""
+
+    scope = 'batch'  # operates on the batched dense grid
 
     def __init__(self, geom, *, modality=None, coherent=True, incoherent=False,
                  dense_key='sensor_dense', enc=DEFAULT_ENC,
@@ -138,6 +178,8 @@ class BatchAddIntrinsicNoise:
 
 class BatchDigitize:
     """Quantize per-plane grids to ADC codes (pedestal from registry or override)."""
+
+    scope = 'batch'  # operates on the batched dense grid
 
     def __init__(self, geom=None, *, modality=None, pedestal=None, n_bits=12,
                  adc_max=None, gain=1.0, dense_key='sensor_dense'):
@@ -193,7 +235,9 @@ def apply_batch_transforms(batch, stages, *, device=None, base_seed=0, epoch=0,
         return batch
     seeds = _batch_seeds(batch, base_seed, epoch, rank, _batch_size(batch, offset_key))
     for stage in stages:
-        batch = stage(batch, seeds=seeds)
+        # pimm-data stages take seeds=; a user's bare callable fn(batch) does not.
+        # Both are first-class on the post-collate side (see _accepts_seeds).
+        batch = stage(batch, seeds=seeds) if _accepts_seeds(stage) else stage(batch)
     return batch
 
 

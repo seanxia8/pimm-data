@@ -201,17 +201,25 @@ are `dense_ops` placed via the bucket (`pre_collate`/`post_collate`) + the runne
 Implementation note: mode C (pre-collate densify) needs `collate` to stack per-plane grids
 `(W,T)→(B,W,T)` — `default_collate` handles same-shape tensors, so no collate change.
 
-**This also simplifies the code (the real win — collapse the duplication):**
-- **One op:** `dense_ops.{densify,add_intrinsic_noise,digitize}` is the single
-  device-agnostic implementation. **Delete the numpy twins** (`Densify`/`AddNoise`/
-  `Digitize` in `detector_transforms.py`) — they're a second implementation with divergent
-  seeding/pedestal/idempotency. Thin stages call `dense_ops` on whatever-device tensors.
+**On the dense ops — two placements of ONE physics, NOT a twin to delete (corrected):**
+An earlier draft said "delete the numpy twins (`Densify`/`AddNoise`/`Digitize`)" as the
+"real win." **Reversed after reading the code** — that was a misread of how much is shared:
+- The numpy `Densify`/`AddNoise`/`Digitize` (`detector_transforms.py`) ARE the **pre-collate
+  `scope='sample'` placement** (in-worker, nested-by-label representation) — mode C / offline
+  cache above. They are exercised end-to-end in `test_noise.py` and are the **oracle** for
+  the torch path in `test_batch_transforms.py`.
+- `dense_ops.{densify,add_intrinsic_noise,digitize}` is a **necessary device-specific port**
+  (the GPU path *must* be torch; numpy fancy-indexing / a numpy Generator don't run on CUDA),
+  NOT a removable duplicate. The genuinely shared math is ~2 lines (scatter) + ~3 (digitize);
+  the bulk of each side is representation+validation with no cross-side equivalent.
+- Deleting the numpy side would break the suite, remove the worker-CPU placement, and *add* a
+  nested→COO shim — more complexity, not less. **Keep both.** The standing guarantee that the
+  two placements agree bit-for-bit is `tests/test_dense_collapse.py` (single-event
+  `dense_ops.densify(B=1)` == numpy `Densify`; `dense_ops.digitize` == `noise.digitize`).
 - **One wrapper:** use **`ApplyToModality` in both phases** — do **not** add a separate
-  `BatchApplyToModality`; it's the same "scope a sub-pipeline to `d[modality]`, write back"
-  logic (`detector_transforms.py:43`).
+  `BatchApplyToModality` (`detector_transforms.py:43`).
 - **Device on the runner, not the stage:** config picks the *bucket*
-  (`pre_collate`/`post_collate`); `apply_batch_transforms(…, device=)` picks the *device*
-  (move-then-run device-agnostic stages — already built).
+  (`pre_collate`/`post_collate`); `apply_batch_transforms(…, device=)` picks the *device*.
 
 **Don't:** add a "born-on-GPU" assert (breaks CPU eval/no-GPU/tests) — assert only
 **device-consistency** (inputs + `offset` share a device), never CUDA-residency. Don't
@@ -360,8 +368,17 @@ Phases 2–4 deliver the committed C4.
 - **Phase 3 (data-layer) — DONE.** Dense stages take `modality=` (born at
   `batch['sensor']['dense']` on the namespaced batch); device-consistency assert; the
   "noise drift" was a test-infra `tools` collision (fixed) — **no port drift**, parity to
-  9.5e-7. *Deferred:* delete the numpy densify twins (entangled with the oracle tests; pure
-  cleanup); `plane_id→plane_gid` param rename (cosmetic).
+  9.5e-7. *Reversed (was "deferred — delete the numpy twins"):* the numpy
+  `Densify`/`AddNoise`/`Digitize` are the **pre-collate placement** (oracle + worker-CPU
+  path), not removable duplication — the torch `dense_ops` is a necessary device port. Kept
+  both; `tests/test_dense_collapse.py` is the standing cross-placement equivalence guard. See
+  §3B. *Cosmetic-deferred:* `plane_id→plane_gid` param rename.
+- **Uniform user-transform path — DONE.** Post-collate `apply_batch_transforms` accepts bare
+  user callables (no `seeds=`/registration needed), matching the pre-collate `Compose`;
+  `scope='sample'|'batch'` marker + `Compose` build-time fence places/guards them
+  (`tests/test_user_transforms.py`). This is the concrete "user transform inside or on GPU"
+  capability (§11.3). *Still owed:* per-event rng plumbing (G1, deferred) + written
+  key/length contract.
 - **Phase 5 (data-layer) — DONE.** Transcode identity-preservation test (F1).
 - **Phase 4 — NOT STARTED (team-driven research).** The C4 fusion model + the wire-TPC
   denoise config live in pimm and require model/physics decisions (sparse-vs-dense sensor
@@ -441,6 +458,23 @@ pimm's view-generators cover SSL today.)
 A user supplies their own transform — a bare callable OR the standard `dict(type=)` —
 scoped to a modality, and it's applied. ~80% already supported (a transform IS
 `callable(dict)->dict`; `ApplyToModality` already composes).
+
+**BUILT now (the uniform-callable path — the core of this ambition):**
+- **Both sides accept a bare callable.** Pre-collate: `Compose` already did
+  (`transform.py`). Post-collate: `apply_batch_transforms` now inspects each stage and calls
+  `stage(batch)` when it doesn't take `seeds=` — so a user's GPU op `fn(batch)->batch`
+  (lambda, `nn.Module`, pre-built instance) is first-class with **no** `seeds` plumbing and
+  **no** registration, exactly like the pre-collate side. (`_accepts_seeds`,
+  `tests/test_user_transforms.py`.)
+- **`scope` is the single declaration that places a transform.** A transform may set
+  `scope='sample'` (default — sees one event, pre-collate `map`) or `scope='batch'` (needs the
+  collated set, post-collate only; the `Batch*` stages carry it). `Compose` **fences** a
+  `scope='batch'` entry at build time (it cannot run per-event in a fork). This is the bridge
+  between the *conceptual* unification (transforms differ only in scope) and the *physical*
+  two phases (§3A): scope declares, the two-phase placement + fences enforce.
+- Still owed: the per-event rng plumbing (G1, deferred) and the written key/length contract
+  (below). The GPU bare-callable does NOT need a `BatchApplyToModality` wrapper — the runner
+  tolerates it directly.
 
 **Required ON THE USER:**
 - A callable `f(sub)->sub` where `sub` is the modality's **numpy** dict (`coord (N,C)` +

@@ -11,7 +11,8 @@ import pytest
 import torch
 
 from pimm_data.transform import Compose
-from pimm_data.batch_transforms import apply_batch_transforms, BatchDensify
+from pimm_data.batch_transforms import (apply_batch_transforms, build_batch_transforms,
+                                        BatchDensify, ToDevice)
 
 
 def test_precollate_bare_callable():
@@ -69,3 +70,47 @@ def test_compose_rejects_scope_batch():
     assert getattr(stage, 'scope', None) == 'batch'
     with pytest.raises(ValueError, match="scope='batch'"):
         Compose([stage])
+
+
+# --- general batch-transform builder + device-as-transform ------------------
+
+def test_build_batch_transforms_from_config_and_callables():
+    """The post-collate analog of Compose: builds registry dicts AND bare callables
+    into one stage list — no bespoke per-purpose builder needed."""
+    stages = build_batch_transforms([
+        dict(type='ToDevice', device='cpu'),
+        lambda b: b,
+    ])
+    assert isinstance(stages[0], ToDevice) and stages[0].device == 'cpu'
+    assert callable(stages[1])
+
+
+def test_todevice_as_transform_equiv_to_device_arg():
+    """ToDevice as the first stage == passing device= to the runner (same result)."""
+    def mk():
+        return {'feat': torch.ones(3, 2), 'offset': torch.tensor([3]), 'name': ['e0']}
+
+    via_arg   = apply_batch_transforms(mk(), [lambda b: b], device='cpu')
+    via_stage = apply_batch_transforms(
+        mk(), build_batch_transforms([dict(type='ToDevice', device='cpu'),
+                                      lambda b: b]))   # no device= argument
+    assert via_stage['feat'].device == via_arg['feat'].device
+    assert torch.equal(via_stage['feat'], via_arg['feat'])
+
+
+def test_build_batch_transforms_warns_on_scope_sample():
+    """A scope='sample' transform in a batch list is built but warned (it belongs
+    in the pre-collate Compose)."""
+    class PerEvent:
+        scope = 'sample'
+        def __call__(self, b):
+            return b
+
+    with pytest.warns(RuntimeWarning, match="scope='sample'"):
+        build_batch_transforms([PerEvent()])
+
+
+def test_compose_rejects_todevice():
+    """ToDevice is scope='batch' → the pre-collate fence rejects it too."""
+    with pytest.raises(ValueError, match="scope='batch'"):
+        Compose([dict(type='ToDevice', device='cpu')])

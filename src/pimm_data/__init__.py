@@ -49,9 +49,12 @@ from .geometry import load_plane_registry, dataset_geometry_kwargs
 from . import dense_ops  # noqa: F401
 from .batch_transforms import (
     apply_batch_transforms,
+    build_batch_transforms,
+    sensor_dense_cfg,
     build_sensor_gpu_stages,
     move_to_device,
     content_seed,
+    ToDevice,
     BatchTransformMixin,
 )
 
@@ -79,11 +82,14 @@ __all__ = [
     "LUCiDHitsReader",
     "LUCiDLablReader",
     "build_joint_index",
-    # post-collate dense GPU transform path
+    # post-collate batch transform path
     "apply_batch_transforms",
+    "build_batch_transforms",
+    "sensor_dense_cfg",
     "build_sensor_gpu_stages",
     "move_to_device",
     "content_seed",
+    "ToDevice",
     "BatchTransformMixin",
     "load_plane_registry",
     "dataset_geometry_kwargs",

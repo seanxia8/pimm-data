@@ -2,13 +2,24 @@
 Post-collate, on-device batch transforms — the runner pimm-data owns.
 
 Workers stay CPU/sparse; the dense path runs here, once per batch, in the main
-process. ``apply_batch_transforms`` moves the (sparse) batch to the device
-(idempotent) and runs an ordered list of stages on the collated tensors; the
-dense grids are born on-device. Device-agnostic: pass ``device='cpu'`` to run the
-exact same stages on CPU (tests / no-GPU). This module imports ``torch`` but never
-``torch.cuda``.
+process. Post-collate transforms are built from config by
+:func:`build_batch_transforms` (the batch-side analog of
+:class:`pimm_data.transform.Compose`) and run by :func:`apply_batch_transforms` on
+the collated tensors; the dense grids are born on-device. Device-agnostic: a
+``ToDevice('cpu')`` stage (or ``device='cpu'``) runs the exact same transforms on
+CPU (tests / no-GPU). This module imports ``torch`` but never ``torch.cuda``.
 
-Stages take ``(batch, *, seeds)`` and mutate/return the batch dict:
+Built-in batch transforms (registered, ``scope='batch'``):
+
+* ``ToDevice``         — move the batch to a device (device-as-transform)
+* ``BatchDensify``     — sparse ``wire/time/value/plane_gid/offset`` -> ``batch[dense_key]={gid:(B,W,T)}``
+* ``BatchAddIntrinsicNoise`` — fresh coherent (+optional incoherent) noise per event
+* ``BatchDigitize``    — quantize to ADC codes
+
+The dense sensor chain is just one config — :func:`sensor_dense_cfg` returns it as
+``dict(type=…)`` entries to splat into :func:`build_batch_transforms`; there is no
+bespoke builder it requires. pimm-data stages take ``(batch, *, seeds)``; a user
+stage is a bare ``fn(batch) -> batch``. They mutate/return the batch dict:
 
 * ``BatchDensify``      — sparse ``wire/time/value/plane_gid/offset`` -> ``batch[dense_key]={gid:(B,W,T)}``
 * ``BatchAddIntrinsicNoise`` — fresh coherent (+optional incoherent) noise per event
@@ -48,6 +59,7 @@ import warnings
 import torch
 
 from . import dense_ops
+from .transform import TRANSFORMS
 from .noise import (DEFAULT_ENC, DEFAULT_SAMPLING_RATE_HZ, DEFAULT_GROUP_SIZE,
                     DEFAULT_COH_RMS_ADC, DEFAULT_COH_CORNER_FREQ_HZ,
                     DEFAULT_COH_SLOPE, DEFAULT_COH_BETA)
@@ -122,7 +134,29 @@ def _accepts_seeds(stage):
     return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
-# ── stages ─────────────────────────────────────────────────────────────────
+# ── batch transforms (post-collate; registered, scope='batch') ───────────────
+@TRANSFORMS.register_module()
+class ToDevice:
+    """Move the whole batch to a device — the device move expressed as a transform.
+
+    So device selection composes uniformly with the other batch transforms instead
+    of being a special ``apply_batch_transforms(device=)`` argument: put
+    ``dict(type='ToDevice', device='cuda')`` first in the list and everything after
+    runs on-device. Idempotent (a tensor already on ``device`` is returned without a
+    copy). ``scope='batch'`` so the pre-collate ``Compose`` fence keeps it post-collate.
+    """
+
+    scope = 'batch'
+
+    def __init__(self, device, *, non_blocking=True):
+        self.device = device
+        self.non_blocking = non_blocking
+
+    def __call__(self, batch):
+        return move_to_device(batch, self.device, non_blocking=self.non_blocking)
+
+
+@TRANSFORMS.register_module()
 class BatchDensify:
     """Sparse hits -> per-plane dense grids ``batch[dense_key] = {gid: (B,W,T)}``."""
 
@@ -146,6 +180,7 @@ class BatchDensify:
         return batch
 
 
+@TRANSFORMS.register_module()
 class BatchAddIntrinsicNoise:
     """Add fresh per-event coherent (+optional incoherent) noise to the grids."""
 
@@ -176,6 +211,7 @@ class BatchAddIntrinsicNoise:
         return batch
 
 
+@TRANSFORMS.register_module()
 class BatchDigitize:
     """Quantize per-plane grids to ADC codes (pedestal from registry or override)."""
 
@@ -200,34 +236,102 @@ class BatchDigitize:
         return batch
 
 
-def build_sensor_gpu_stages(geom, *, modality=None, coherent=True, incoherent=False,
-                            digitize=True, n_bits=12, dense_key=None, **noise_kw):
-    """Convenience: the standard Densify -> AddNoise -> Digitize stage list.
+# ── builder (the post-collate analog of transform.Compose) ───────────────────
+def build_batch_transforms(cfg):
+    """Build a post-collate transform list from config — the batch-side analog of
+    :class:`pimm_data.transform.Compose`.
 
-    ``geom`` is a canonical-plane-id registry (e.g. ``JAXTPCDataset.plane_geometry()``).
-    ``modality=None`` operates on the bare batch and writes ``batch['sensor_dense']``
-    (back-compat); ``modality='sensor'`` scopes to the namespaced ``batch['sensor']``
-    sub-dict and writes ``batch['sensor']['dense']``.
+    Each entry is either a registry config ``dict(type='BatchDensify', …)`` (any
+    ``scope='batch'`` transform — ``ToDevice``, ``BatchDensify``,
+    ``BatchAddIntrinsicNoise``, ``BatchDigitize``, or your own registered one) or a
+    bare callable (a user GPU op / ``nn.Module``). Returns the list to hand to
+    :func:`apply_batch_transforms`. This is the general mechanism; the dense sensor
+    chain is just one config you can build with it (see :func:`sensor_dense_cfg`).
+
+    Unlike ``Compose`` (pre-collate), this is where a ``scope='batch'`` transform
+    belongs; a ``scope='sample'`` entry is built but **warned** (it almost always
+    wants the pre-collate ``Compose`` instead).
+    """
+    stages = []
+    for entry in (cfg or []):
+        if isinstance(entry, dict):
+            t = TRANSFORMS.build(entry)
+        elif callable(entry):
+            t = entry
+        else:
+            raise TypeError(
+                "build_batch_transforms entries must be dict (registry config) or "
+                f"callable, got {type(entry).__name__}")
+        if getattr(t, 'scope', 'batch') == 'sample':
+            warnings.warn(
+                f"{type(t).__name__} is scope='sample' (per-event) — it usually "
+                "belongs in the pre-collate Compose, not a batch transform list.",
+                RuntimeWarning, stacklevel=2)
+        stages.append(t)
+    return stages
+
+
+def sensor_dense_cfg(geom, *, modality='sensor', device=None, coherent=True,
+                     incoherent=False, digitize=True, n_bits=12, dense_key=None,
+                     **noise_kw):
+    """Optional sugar: the **config list** for the standard dense sensor chain
+    ``[ToDevice?, BatchDensify, BatchAddIntrinsicNoise, BatchDigitize?]``.
+
+    Returns plain ``dict(type=…)`` configs so you can splat it into
+    :func:`build_batch_transforms` and add your own transforms around it::
+
+        stages = build_batch_transforms([
+            *sensor_dense_cfg(geom, device='cuda'),
+            my_user_gpu_fn,
+        ])
+
+    ``geom`` is a canonical-plane-id registry (``JAXTPCDataset.plane_geometry()`` or
+    ``load_plane_registry(json)``). Pass ``device=`` to prepend a ``ToDevice`` stage
+    (the device-as-transform path) instead of the ``apply_batch_transforms(device=)``
+    argument. ``modality='sensor'`` writes ``batch['sensor']['dense']``;
+    ``modality=None`` operates on the bare batch (writes ``batch['sensor_dense']``).
     """
     if dense_key is None:
         dense_key = 'dense' if modality is not None else 'sensor_dense'
-    stages = [BatchDensify(geom, modality=modality, dense_key=dense_key),
-              BatchAddIntrinsicNoise(geom, modality=modality, coherent=coherent,
-                                     incoherent=incoherent, dense_key=dense_key,
-                                     **noise_kw)]
+    cfg = []
+    if device is not None:
+        cfg.append(dict(type='ToDevice', device=device))
+    cfg.append(dict(type='BatchDensify', geom=geom, modality=modality,
+                    dense_key=dense_key))
+    cfg.append(dict(type='BatchAddIntrinsicNoise', geom=geom, modality=modality,
+                    coherent=coherent, incoherent=incoherent, dense_key=dense_key,
+                    **noise_kw))
     if digitize:
-        stages.append(BatchDigitize(geom, modality=modality, n_bits=n_bits,
-                                    dense_key=dense_key))
-    return stages
+        cfg.append(dict(type='BatchDigitize', geom=geom, modality=modality,
+                        n_bits=n_bits, dense_key=dense_key))
+    return cfg
+
+
+def build_sensor_gpu_stages(geom, *, modality=None, **kw):
+    """Back-compat thin wrapper: ``build_batch_transforms(sensor_dense_cfg(geom, …))``.
+
+    Keeps the original ``modality=None`` (bare-batch) default — note
+    :func:`sensor_dense_cfg` itself defaults to the namespaced ``modality='sensor'``.
+    Prefer composing your own list with :func:`build_batch_transforms` +
+    :func:`sensor_dense_cfg`; this is kept so existing callers keep working.
+    """
+    return build_batch_transforms(sensor_dense_cfg(geom, modality=modality, **kw))
 
 
 # ── runner ──────────────────────────────────────────────────────────────────
 def apply_batch_transforms(batch, stages, *, device=None, base_seed=0, epoch=0,
                            rank=0, offset_key='offset'):
-    """Move the batch to ``device`` (idempotent), then run ``stages`` on-device.
+    """Run ``stages`` (a list from :func:`build_batch_transforms`) on the batch.
 
-    ``stages`` empty -> just the move (byte-equivalent to a plain ``.to(device)``
-    loop). Per-event seeds are derived from ``batch['name']`` + ``base_seed/epoch/rank``.
+    Per-event seeds are derived from ``batch['name']`` + ``base_seed/epoch/rank`` and
+    passed to stages that declare ``seeds=``; a bare user callable ``fn(batch)`` is
+    called without it.
+
+    Device: the **preferred** way is a ``ToDevice`` transform as the first stage
+    (device-as-transform — uniform with the rest). The ``device=`` argument is a
+    back-compat convenience that prepends the move; if both are given the argument
+    moves first and a leading ``ToDevice`` is then a no-op. ``stages`` empty +
+    ``device`` set -> just the move.
     """
     if device is not None:
         batch = move_to_device(batch, device)

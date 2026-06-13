@@ -28,6 +28,7 @@ import copy
 import hashlib
 
 import numpy as np
+import torch
 
 from .transform import TRANSFORMS, Compose
 from .noise import (generate_noise, digitize, DEFAULT_ENC,
@@ -102,17 +103,21 @@ class ApplyToModality(Apply):
 
 
 def _knn_edges(coord, k):
-    """Directed kNN edges (2, E): row0 src, row1 the k nearest neighbours. O(N^2)
-    (fine for the per-event clouds here; swap in a KD-tree for large N)."""
+    """Directed kNN edges ``(2, E)`` (torch): row0 src, row1 the k nearest neighbours.
+
+    Uses ``torch.cdist`` + ``topk`` (GPU-ready). Returns a ``torch.long`` tensor —
+    Collect/collate carry it through; the pre-collate numpy parts coexist fine.
+    """
+    coord = torch.as_tensor(coord).float()
     n = coord.shape[0]
     if n <= 1:
-        return np.zeros((2, 0), dtype='int64')
-    d = np.sum((coord[:, None, :] - coord[None, :, :]) ** 2, axis=-1)
-    np.fill_diagonal(d, np.inf)
+        return torch.zeros((2, 0), dtype=torch.long)
     k = min(int(k), n - 1)
-    nbr = np.argpartition(d, k - 1, axis=1)[:, :k]
-    src = np.repeat(np.arange(n), k)
-    return np.stack([src, nbr.reshape(-1)]).astype('int64')
+    d = torch.cdist(coord, coord)
+    d.fill_diagonal_(float('inf'))
+    nbr = d.topk(k, largest=False).indices                 # (n, k)
+    src = torch.arange(n).repeat_interleave(k)
+    return torch.stack([src, nbr.reshape(-1)]).long()
 
 
 @TRANSFORMS.register_module()
@@ -151,16 +156,17 @@ class BuildNexus:
         self.to, self.k, self.coord_key = to, int(k), coord_key
 
     def __call__(self, data_dict):
-        s = np.asarray(data_dict[self.src][self.coord_key])
-        d = np.asarray(data_dict[self.dst][self.coord_key])
+        s = torch.as_tensor(data_dict[self.src][self.coord_key]).float()
+        d = torch.as_tensor(data_dict[self.dst][self.coord_key]).float()
         if s.shape[0] == 0 or d.shape[0] == 0:
-            ei = np.zeros((2, 0), dtype='int64')
+            ei = torch.zeros((2, 0), dtype=torch.long)
         else:
-            dist = np.sum((s[:, None, :s.shape[1]] - d[None, :, :s.shape[1]]) ** 2, axis=-1)
+            dim = min(s.shape[1], d.shape[1])              # tolerate differing coord dims
+            dist = torch.cdist(s[:, :dim], d[:, :dim])      # (Ns, Nd)
             kk = min(self.k, d.shape[0])
-            nbr = np.argpartition(dist, kk - 1, axis=1)[:, :kk]
-            src = np.repeat(np.arange(s.shape[0]), kk)
-            ei = np.stack([src, nbr.reshape(-1)]).astype('int64')
+            nbr = dist.topk(kk, largest=False).indices      # (Ns, kk)
+            src = torch.arange(s.shape[0]).repeat_interleave(kk)
+            ei = torch.stack([src, nbr.reshape(-1)]).long()
         data_dict[self.to] = {'edge_index': ei,
                               '_roles': {'edge_index': ('edge', (self.src, self.dst))}}
         return data_dict

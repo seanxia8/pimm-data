@@ -63,3 +63,25 @@ def test_build_nexus_cross_store():
 
 def s0_nexus_count(s0):
     return s0['nexus_edge_index'].shape[1]
+
+
+def test_setup_graph_then_subsample_remaps_edges():
+    """SetupGraph then GridSample (subsample) -> edges remapped, no dangling index.
+    Proves the roles-aware index_operator edge remap (subsample/graph any order)."""
+    import numpy as np
+    from pimm_data.transform import Compose
+    np.random.seed(0)
+    rng = np.random.default_rng(0)
+    d = {'step': {'coord': rng.standard_normal((30, 3)).astype('float32') * 5}}
+    out = Compose([
+        dict(type='SetupGraph', on='step', k=3),
+        dict(type='ApplyToModality', modality='step', transforms=[
+            dict(type='GridSample', grid_size=1.0, mode='train')]),
+    ])(d)
+    sub = out['step']
+    n = sub['coord'].shape[0]
+    e = sub['edge_index']
+    e = e.cpu().numpy() if hasattr(e, 'cpu') else e
+    assert e.shape[0] == 2
+    # every remaining edge endpoint is a valid row of the SUBSAMPLED cloud
+    assert e.size == 0 or (int(e.min()) >= 0 and int(e.max()) < n)

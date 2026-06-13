@@ -136,6 +136,31 @@ def _rotate_about_center(data_dict, rot_t, center=None):
     return data_dict
 
 
+def _remap_self_edges(data_dict, index):
+    """For each ``('edge','self')`` key in ``data_dict['_roles']``, keep edges whose
+    BOTH endpoints survive ``index`` and reindex to the new row positions."""
+    roles = data_dict.get("_roles")
+    if not roles or "coord" not in data_dict:
+        return
+    edge_keys = [k for k, r in roles.items()
+                 if isinstance(r, (tuple, list)) and len(r) == 2
+                 and r[0] == "edge" and r[1] == "self" and k in data_dict]
+    if not edge_keys:
+        return
+    n_old = data_dict["coord"].shape[0]
+    idx = np.asarray(index)
+    kept = np.where(idx)[0] if idx.dtype == bool else idx.astype("int64")
+    old2new = np.full(int(n_old), -1, dtype="int64")
+    old2new[kept] = np.arange(len(kept))
+    for k in edge_keys:
+        e = data_dict[k]
+        is_torch = isinstance(e, torch.Tensor)
+        ea = e.cpu().numpy() if is_torch else np.asarray(e)
+        keep = (old2new[ea[0]] >= 0) & (old2new[ea[1]] >= 0)
+        remapped = np.stack([old2new[ea[0][keep]], old2new[ea[1][keep]]])
+        data_dict[k] = torch.as_tensor(remapped) if is_torch else remapped
+
+
 def index_operator(data_dict, index, duplicate=False):
     # index selection operator for keys in "index_valid_keys"
     # custom these keys by "Update" transform in config
@@ -150,6 +175,11 @@ def index_operator(data_dict, index, duplicate=False):
     # wire/time/value/plane_gid (dense-path scatter inputs) are intentionally not
     # subset — densify consumes them as immutable raw COO.
     _augment_index_valid_keys(data_dict)
+    # roles-aware edge remap (REDESIGN §4): a self-edge key indexes this part's rows,
+    # so subsampling must DROP edges to removed rows and REINDEX, not slice. Makes
+    # "subsample then build graph" order-independent. Cross-store edges index other
+    # parts (producer-only, built last) and are left untouched.
+    _remap_self_edges(data_dict, index)
     if not duplicate:
         for key in data_dict["index_valid_keys"]:
             if key in data_dict:

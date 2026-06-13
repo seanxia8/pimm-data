@@ -45,6 +45,9 @@ from ._joint_index import build_joint_index
 # Plane-geometry registry (loaded from a JAXTPC-exported config JSON)
 from .geometry import load_plane_registry, dataset_geometry_kwargs
 
+# Flat-prefixed batch boundary helpers (REDESIGN)
+from .batch_ops import to_batched_coords, split_event
+
 # Post-collate, on-device batch transforms (the dense GPU path runner)
 from . import dense_ops  # noqa: F401
 from .batch_transforms import (
@@ -93,6 +96,9 @@ __all__ = [
     "BatchTransformMixin",
     "load_plane_registry",
     "dataset_geometry_kwargs",
+    # flat-prefixed batch boundary helpers (REDESIGN)
+    "to_batched_coords",
+    "split_event",
 ]
 
 __version__ = "0.3.0"

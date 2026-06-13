@@ -109,14 +109,6 @@ def _coherent_spectrum(n_ticks, corner_freq_hz, spectral_slope, sampling_rate_hz
     return spec.astype(np.float64)
 
 
-def _expected_rms(spectrum, n_ticks):
-    """Parseval RMS of a signal with the given rfft amplitude spectrum."""
-    S = np.asarray(spectrum, dtype=np.float64)
-    N = n_ticks
-    var = (S[0] ** 2 + 4.0 * np.sum(S[1:-1] ** 2) + S[-1] ** 2) / N ** 2
-    return float(np.sqrt(max(var, 0.0)))
-
-
 def coherent_noise(n_channels, n_ticks, rng, *, group_size=DEFAULT_GROUP_SIZE,
                    rms_adc=DEFAULT_COH_RMS_ADC,
                    corner_freq_hz=DEFAULT_COH_CORNER_FREQ_HZ,
@@ -126,8 +118,10 @@ def coherent_noise(n_channels, n_ticks, rng, *, group_size=DEFAULT_GROUP_SIZE,
 
     Faithful numpy port of JAXTPC ``tools.coherent_noise.generate_group_waveforms``
     + ``broadcast_to_wires``: one waveform per group with adjacent-group
-    anti-correlation (``w'(g) = w(g) - beta*(w(g-1)+w(g+1))``), per-group RMS
-    renormalised to ``rms_adc`` via Parseval — **no 1/sqrt(N)**.
+    anti-correlation (``w'(g) = w(g) - beta*(w(g-1)+w(g+1))``), then per-group RMS
+    renormalised to ``rms_adc`` **after** the coupling by the *measured* realized RMS
+    (JAXTPC 6998d81 — the coupling inflates variance, so analytic/Parseval norm of the
+    pre-coupling spectrum runs ~2% high at the default beta).
     """
     n_groups = (n_channels + group_size - 1) // group_size
     spec = _coherent_spectrum(n_ticks, corner_freq_hz, spectral_slope,
@@ -149,9 +143,10 @@ def coherent_noise(n_channels, n_ticks, rng, *, group_size=DEFAULT_GROUP_SIZE,
     right = np.concatenate([base[1:], z], axis=0)
     waveforms = base - beta * (left + right)
 
-    expected = _expected_rms(spec, n_ticks)
-    if expected > 0:
-        waveforms = waveforms * (rms_adc / expected)
+    # normalize AFTER coupling, by the measured realized RMS (matches JAXTPC).
+    realized = float(np.sqrt(np.mean(waveforms.astype(np.float64) ** 2)))
+    if realized > 0:
+        waveforms = waveforms * (rms_adc / realized)
 
     wire_to_group = np.arange(n_channels) // group_size
     return waveforms[wire_to_group].astype(np.float32)

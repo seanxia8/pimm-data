@@ -38,6 +38,7 @@ straight to the decision log: `engagement_plan_transform_dataset_placement.md`
 
 | Doc | Class | One-liner |
 |---|---|---|
+| `CAMPAIGN.md` | **CANONICAL** | Cross-dataset challenge matrix (JAXTPC/LUCiD/Optical) — `dataset × task → (modalities, labels, transforms, Collect)` + config tracker. Consolidates LUCiD's `Tasks→files` and pimm's `Task→config`. |
 | `DESIGN.md` | **CANONICAL** | Authoritative design + decisions (the "why"). *Being written now; if briefly absent, it is still canonical.* |
 | `ROADMAP.md` | **CANONICAL** | Phased plan + sign-off checklist (the "what/when"). *Being written now; if briefly absent, still canonical.* |
 | `impl/00_index.md` | **CANONICAL** | Build map: part index, dep graph, build order, cross-part contracts, DoD. Read first among the impl set. |

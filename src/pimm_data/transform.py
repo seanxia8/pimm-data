@@ -269,7 +269,11 @@ class Collect(object):
                 projected = self._project(data_dict[mname], keys, offset_keys, feat_specs)
                 for k, v in projected.items():
                     out[f'{mname}_{k}'] = v
-                for k, r in part_roles.items():       # prefix declared roles
+                # roles: producer-stamped (sub-dict '_roles') first, then spec roles=
+                for k, r in data_dict[mname].get('_roles', {}).items():
+                    if k in keys:                     # only for keys actually collected
+                        roles[f'{mname}_{k}'] = r
+                for k, r in part_roles.items():       # explicit spec roles= win
                     roles[f'{mname}_{k}'] = r
             out['_roles'] = roles                     # always present -> flat-roles collate
         else:

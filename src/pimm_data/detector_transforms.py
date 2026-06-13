@@ -101,6 +101,71 @@ class ApplyToModality(Apply):
         super().__init__(on=modality, transforms=transforms, required=required)
 
 
+def _knn_edges(coord, k):
+    """Directed kNN edges (2, E): row0 src, row1 the k nearest neighbours. O(N^2)
+    (fine for the per-event clouds here; swap in a KD-tree for large N)."""
+    n = coord.shape[0]
+    if n <= 1:
+        return np.zeros((2, 0), dtype='int64')
+    d = np.sum((coord[:, None, :] - coord[None, :, :]) ** 2, axis=-1)
+    np.fill_diagonal(d, np.inf)
+    k = min(int(k), n - 1)
+    nbr = np.argpartition(d, k - 1, axis=1)[:, :k]
+    src = np.repeat(np.arange(n), k)
+    return np.stack([src, nbr.reshape(-1)]).astype('int64')
+
+
+@TRANSFORMS.register_module()
+class SetupGraph:
+    """Producer: build a kNN graph on a part's points (REDESIGN §4, the graph case).
+
+    Reads ``<on>.coord``, writes ``<on>.edge_index`` (2, E) into the part and stamps
+    its role ``('edge','self')`` in the part's ``_roles`` so collate shifts edges by
+    the part's running node count. List ``edge_index`` in that part's ``Collect`` keys.
+    """
+
+    def __init__(self, on='step', k=16, coord_key='coord', out_key='edge_index'):
+        self.on, self.k = on, int(k)
+        self.coord_key, self.out_key = coord_key, out_key
+
+    def __call__(self, data_dict):
+        part = data_dict[self.on]
+        part[self.out_key] = _knn_edges(np.asarray(part[self.coord_key]), self.k)
+        part.setdefault('_roles', {})[self.out_key] = ('edge', 'self')
+        return data_dict
+
+
+@TRANSFORMS.register_module()
+class BuildNexus:
+    """Producer: bipartite cross-store edges between two parts (NuGraph 'nexus').
+
+    Reads ``<src>.coord`` and ``<dst>.coord``, writes a NEW edge-only part
+    (``to``, default 'nexus') holding ``edge_index`` (2, E) — row0 indexes ``src``,
+    row1 indexes ``dst`` — with role ``('edge',(src,dst))`` so collate shifts each
+    row by the corresponding part's node count. Collect the edge part with
+    ``offset_keys_dict={}`` (it has no points of its own).
+    """
+
+    def __init__(self, on=('hit', 'sp'), to='nexus', k=1, coord_key='coord'):
+        self.src, self.dst = on
+        self.to, self.k, self.coord_key = to, int(k), coord_key
+
+    def __call__(self, data_dict):
+        s = np.asarray(data_dict[self.src][self.coord_key])
+        d = np.asarray(data_dict[self.dst][self.coord_key])
+        if s.shape[0] == 0 or d.shape[0] == 0:
+            ei = np.zeros((2, 0), dtype='int64')
+        else:
+            dist = np.sum((s[:, None, :s.shape[1]] - d[None, :, :s.shape[1]]) ** 2, axis=-1)
+            kk = min(self.k, d.shape[0])
+            nbr = np.argpartition(dist, kk - 1, axis=1)[:, :kk]
+            src = np.repeat(np.arange(s.shape[0]), kk)
+            ei = np.stack([src, nbr.reshape(-1)]).astype('int64')
+        data_dict[self.to] = {'edge_index': ei,
+                              '_roles': {'edge_index': ('edge', (self.src, self.dst))}}
+        return data_dict
+
+
 @TRANSFORMS.register_module()
 class MultiCrop:
     """Produce packed multi-crop view PARTS from a source part (SSL multi-view).

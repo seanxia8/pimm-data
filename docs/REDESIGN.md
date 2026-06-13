@@ -129,10 +129,10 @@ Two shapes:
 - **Producer** (`MultiCrop`, `SetupGraph`, `BuildNexus`, fusion): part-aware,
   declares `on=` (one part, or a tuple to gather), returns NEW prefixed keys + roles.
 
-**Geometric transforms take `keys=`** to scope which coord-like keys they mutate.
-`RandomRotate(keys=('coord',))` rotates `coord` but leaves `origin_coord` (the
-un-augmented match target) intact. This is mandatory — without it SSL degrades
-silently.
+**Geometric transforms already scope to `coord`/`vertex`/`normal`** and leave
+`origin_coord` (the un-augmented match target) untouched — verified in
+`_rotate_about_center`. So `origin_coord` is safe without any extra flag;
+transforms that take values per key (`RandomJitter(keys=…)`) already expose it.
 
 **`scope` = arity, not placement:** `'sample'` (per-single, placeable anywhere
 fork-safety allows — densify/noise/digitize are here) vs `'batch'` (cross-sample —
@@ -276,10 +276,10 @@ transform = [
          local_view_num=6,  local_view_scale=(0.1,0.4),
          global_shared_transform=[dict(type='MultiplicativeRandomJitter', keys=('energy',))],
          global_transform=[dict(type='CenterShift'),
-                           dict(type='RandomRotate', keys=('coord',), axis='z'),  # origin_coord SAFE
-                           dict(type='RandomFlip',   keys=('coord',))],
+                           dict(type='RandomRotate', axis='z'),  # only coord/vertex/normal -> origin_coord SAFE
+                           dict(type='RandomFlip')],
          local_transform =[dict(type='CenterShift'),
-                           dict(type='RandomRotate', keys=('coord',), axis='z')]),
+                           dict(type='RandomRotate', axis='z')]),
     dict(type='Collect', namespaces=('global','local'),
          feat_keys=('coord','energy'), carry=('origin_coord','segment_motif'))]
 # -> {global_coord, global_offset, global_feat, global_origin_coord, global_segment_motif,

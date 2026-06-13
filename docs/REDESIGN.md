@@ -120,13 +120,12 @@ Two shapes:
   (`coord`, `segment`). Targeted at a part by **`Apply(on='step', transforms=[…])`**,
   which exposes `step_*` as bare keys, runs the inner transforms, and re-prefixes
   (translating `_roles`/per-point membership bare↔prefixed). **A multi-part
-  `Apply(on=('step','sensor'), …)` shares the RNG draw BY DEFAULT** — co-registering
-  the parts (same rotation/flip), which is the natural reading of "apply this one
-  transform to both." **Independent augmentation = separate `Apply` blocks** (one per
-  part → independent draws). The config *shape* carries the intent: bundled = together,
-  separate = independent. `shared=False` is a rarely-needed escape hatch (same
-  transform-list, independent draws, in one block) and a candidate for removal. Views
-  never use this path — their independent per-crop augmentation is `MultiCrop`'s job.
+  `Apply(on=('step','sensor'), …)` is IMPLICITLY shared** — it runs the transforms
+  once per part with the SAME RNG draw (restore RNG state before each), co-registering
+  them (same rotation/flip). There is **NO `shared` flag.** The config *shape* carries
+  the intent: **bundled (`on=tuple`) = shared/together; separate `Apply` blocks =
+  independent.** Views never use this path — their independent per-crop augmentation
+  is `MultiCrop`'s job.
 - **Producer** (`MultiCrop`, `SetupGraph`, `BuildNexus`, fusion): part-aware,
   declares `on=` (one part, or a tuple to gather), returns NEW prefixed keys + roles.
 
@@ -352,7 +351,7 @@ From the pimm + SPINE author reviews of an earlier draft:
 - **`offset` convention is UNCHANGED** (`(B,)` no-leading-0). No model migration for
   offset, and **single-cloud (C1/C2) byte-identity holds** (PF1 golden unchanged) —
   the earlier `(B+1)` idea is dropped (it would have broken every consumer silently).
-- **`Streams` deleted; `ApplyToModalities` folded into `Apply(on=, shared=)`;
+- **`Streams` deleted; `ApplyToModalities` folded into `Apply(on=)` (multi-part = implicitly shared, no flag);
   `from_`→`on`; `Batch*`/`build_batch_transforms`/`apply_batch_transforms` public
   surface removed** (`apply_batch_transforms` becomes the internal tail-runner).
 - **The numpy `Densify`/`AddNoise`/`Digitize` trio in `detector_transforms.py` is
@@ -372,7 +371,7 @@ From the pimm + SPINE author reviews of an earlier draft:
   `{}`. Unify on "explicit `{}` = suppress."
 - **Test files to rewrite/delete** (so "keep the suite green" is honest):
   `test_streams.py` (delete), `test_apply_to_modalities.py` (port to `Apply(on=,
-  shared=)`), `test_batch_transforms.py` (rewrite — `Batch*`/`offset2batch` contract),
+  )`), `test_batch_transforms.py` (rewrite — `Batch*`/`offset2batch` contract),
   `test_user_transforms.py` (port — drops `build_batch_transforms`/`ToDevice` imports),
   `test_phase1.py` (labels= survives; namespaced-Collect assertions flip to flat keys),
   `test_pf1_golden.py` (multimodal goldens re-frozen to flat keys; single-cloud
@@ -391,7 +390,7 @@ From the pimm + SPINE author reviews of an earlier draft:
 2. **Flat-prefixed representation** (`Collect`, datasets): namespaced `Collect` emits
    `part_*`; single stays bare. Working repr stays nested; flatten at `Collect`.
 3. **Transform contract** (`detector_transforms.py`, `transform.py`): `ApplyToModality`
-   → `Apply(on=, shared=)`, fold `ApplyToModalities`; geometric `keys=` scope;
+   → `Apply(on=)` (multi-part implicitly shared, NO flag), fold `ApplyToModalities`; geometric `keys=` scope;
    `index_operator` roles-aware (remap edges).
 4. **Producers & dense as transforms**: `MultiCrop` (cross-repo extraction, keep
    couplings), `SetupGraph`, `BuildNexus`, `Align`; **rewrite** the numpy
@@ -418,8 +417,8 @@ Order: 0 → 1 → 2 → 3 → (4 ∥ 5) → 6 → 7 → 8. Keep the suite green
   `raw` role for the immutable densify COO; `event` role explicitly tagged (not
   shape-derived) for per-event-in-part keys.
 - `_roles` **survives collate** (carried on the batch); other `_`-temporaries dropped.
-- Multi-part `Apply(on=tuple)` **shares the RNG draw by default** (co-registration);
-  independent = separate `Apply` blocks; `shared=False` is a droppable escape hatch.
+- Multi-part `Apply(on=tuple)` is **implicitly shared** (one RNG draw, co-registration) —
+  **no `shared` flag**; independent augmentation = separate `Apply` blocks.
 - No batch-transform concept; `ToDevice` opens the per-batch segment; tail-runner internal.
 - Typed-internal/bare-at-boundary; ship `to_batched_coords`/`batch[i]`.
 - `MultiCrop` owns crop couplings; geometric transforms `keys=`-scoped.

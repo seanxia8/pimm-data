@@ -41,99 +41,64 @@ _NAMED_SCHEMES = {
 
 
 @TRANSFORMS.register_module()
-class ApplyToModality:
-    """Dispatch a sub-pipeline to a nested sub-dict keyed by ``modality``.
+class Apply:
+    """Scope a sub-pipeline to one or more parts (REDESIGN §4).
 
-    :class:`JAXTPCDataset` emits nested dicts of the form
-    ``{'step': {'coord': ..., 'segment': ...}, 'hits': {...}, ...}``.
-    Wrap transforms that hardcode ``'coord'`` / ``'segment'`` in
-    ``ApplyToModality(modality='step', transforms=[...])`` so they operate
-    on the sub-dict directly::
+    During the pre-collate pipeline a sample is nested per part
+    (``{'step': {'coord': …}, 'sensor': {…}}``). The augmentation library hardcodes
+    bare keys (``'coord'``/``'segment'``), so wrap it in ``Apply`` to scope it to a
+    part::
 
-        dict(type='ApplyToModality', modality='step', transforms=[
+        dict(type='Apply', on='step', transforms=[
             dict(type='GridSample', grid_size=0.5),
-            dict(type='RandomRotate'),
+            dict(type='RandomRotate', keys=('coord',)),
         ])
 
-    If ``data_dict`` has no ``modality`` key, the transform is a no-op.
-    This lets a single config run through optional streams without
-    branching on modality presence.
+    ``on`` is one part (str) or several (tuple/list). A **multi-part** ``Apply`` is
+    **implicitly shared**: it restores the numpy RNG state before each part so every
+    *global* random decision (rotation angle, flip, scale) is **identical** across
+    them — co-registering parts that share a coordinate frame. There is **no
+    ``shared`` flag**: the config shape carries the intent — a tuple ``on=`` is
+    shared/together; **independent augmentation = separate ``Apply`` blocks**.
+    Missing parts are a no-op unless ``required``.
+
+    (Scope of "shared" = the global draws — a fixed, size-independent count
+    (angle/flip/scale); per-point transforms like jitter have no well-defined
+    cross-part "same". The inner transforms must use the global ``np.random``.)
     """
 
-    def __init__(self, modality, transforms=None, required=False):
-        if transforms is None:
-            transforms = []
-        self.modality = modality
-        self.required = bool(required)
-        self.inner = Compose(transforms) if transforms else None
-
-    def __call__(self, data_dict):
-        if self.modality not in data_dict:
-            if self.required:
-                raise KeyError(
-                    f"ApplyToModality(modality={self.modality!r}) applied but "
-                    f"data_dict has no such modality; "
-                    f"available: {sorted(k for k in data_dict if isinstance(data_dict.get(k), dict))}")
-            return data_dict
-        if self.inner is not None:
-            data_dict[self.modality] = self.inner(data_dict[self.modality])
-        return data_dict
-
-
-@TRANSFORMS.register_module()
-class ApplyToModalities:
-    """Apply ONE sub-pipeline to SEVERAL modalities with a **shared** random draw.
-
-    :class:`ApplyToModality` scopes to a single modality, and two separate blocks
-    draw randomness independently — so the same ``RandomRotate`` on ``step`` and on
-    a 3-D ``sensor`` rotates them *differently*, breaking alignment for modalities
-    that share a coordinate frame. This applies the same sub-pipeline to each listed
-    modality after **restoring the numpy RNG state before each**, so every *global*
-    random decision (rotation angle, flip, scale) is identical across them::
-
-        dict(type='ApplyToModalities', modalities=['step', 'sensor'], transforms=[
-            dict(type='RandomRotate', angle=[-1, 1], axis='z', p=1.0),
-            dict(type='RandomFlip'),
-        ])  # step and sensor get the SAME angle + flip → stay aligned
-
-    ``shared=False`` falls back to independent draws (a plain convenience over N
-    ``ApplyToModality`` blocks). Missing modalities are skipped unless ``required``.
-
-    Scope of "shared": identical *global* draws — a fixed, size-independent number
-    of values (angle / flip / scale). Per-point transforms (jitter) have no
-    well-defined cross-modal "same" for different-sized clouds; use this for the
-    geometric augmentations that must keep modalities co-registered. The transforms
-    inside must use the global ``np.random`` (the built-ins do).
-    """
-
-    def __init__(self, modalities, transforms=None, shared=True, required=False):
-        self.modalities = list(modalities)
-        self.shared = bool(shared)
+    def __init__(self, on, transforms=None, required=False):
+        self.on = [on] if isinstance(on, str) else list(on)
         self.required = bool(required)
         self.inner = Compose(transforms) if transforms else None
 
     def __call__(self, data_dict):
         if self.inner is None:
             return data_dict
-        missing = [m for m in self.modalities if m not in data_dict]
+        missing = [m for m in self.on if m not in data_dict]
         if missing and self.required:
             raise KeyError(
-                f"ApplyToModalities(modalities={self.modalities!r}) applied but "
-                f"data_dict is missing {missing!r}; available: "
-                f"{sorted(k for k in data_dict if isinstance(data_dict.get(k), dict))}")
-        present = [m for m in self.modalities if m in data_dict]
+                f"Apply(on={self.on!r}) applied but data_dict is missing {missing!r}; "
+                f"available: {sorted(k for k in data_dict if isinstance(data_dict.get(k), dict))}")
+        present = [m for m in self.on if m in data_dict]
         if not present:
             return data_dict
-        # Restore the SAME RNG state before each modality so every global random
-        # decision (angle/flip/scale) is replayed identically -> co-registered
-        # augmentation. After the loop the state has advanced once (the last
-        # modality's draws), so following transforms continue normally.
-        state = np.random.get_state() if self.shared else None
+        # multi-part is IMPLICITLY shared: replay the same RNG draw per part so
+        # geometric decisions co-register. Single part -> no state juggling.
+        state = np.random.get_state() if len(present) > 1 else None
         for m in present:
             if state is not None:
                 np.random.set_state(state)
             data_dict[m] = self.inner(data_dict[m])
         return data_dict
+
+
+@TRANSFORMS.register_module()
+class ApplyToModality(Apply):
+    """Back-compat alias: single-part :class:`Apply`. Prefer ``Apply(on=…)``."""
+
+    def __init__(self, modality, transforms=None, required=False):
+        super().__init__(on=modality, transforms=transforms, required=required)
 
 
 @TRANSFORMS.register_module()

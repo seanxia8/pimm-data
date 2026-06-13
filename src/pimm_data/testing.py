@@ -673,22 +673,39 @@ def _write_lucid_labl(path, events):
 # Optical (PMT light) — doraemon ``label_N`` chunk schema
 # ---------------------------------------------------------------------------
 
+def _write_optical_chunk_group(g, rng, n_pmts, max_chunks, chunk_len, pedestal):
+    """Write one ``{adc,offsets,pmt_id,t0_ns}`` chunk group (no pe_counts)."""
+    n_chunks = int(rng.integers(1, max_chunks + 1))
+    pmt_id = rng.integers(0, n_pmts, size=n_chunks).astype(np.int32)
+    lens = rng.integers(4, chunk_len + 1, size=n_chunks)
+    offsets = np.concatenate([[0], np.cumsum(lens)]).astype(np.int64)
+    adc = (pedestal + rng.normal(0, 5, size=int(offsets[-1]))
+           ).round().clip(0, (1 << 15) - 1).astype(np.uint16)
+    t0_ns = rng.uniform(0, 500, size=n_chunks).astype(np.float32)
+    g.create_dataset('adc', data=adc)
+    g.create_dataset('offsets', data=offsets)
+    g.create_dataset('pmt_id', data=pmt_id)
+    g.create_dataset('t0_ns', data=t0_ns)
+
+
 def make_optical_sample(outdir, dataset_name='optical', n_events=2, n_files=1,
                         n_channels=8, n_labels=3, max_chunks_per_label=4,
-                        chunk_len=16, seed=0):
+                        chunk_len=16, schema='label', seed=0):
     """Write a minimal schema-conformant optical ``sensor/`` dataset.
 
-    Creates ``{outdir}/sensor/{dataset_name}_sensor_NNNN.h5`` with the doraemon
-    ``event_NNN/label_K/{adc, offsets, pmt_id, t0_ns, pe_counts}`` layout (plus
-    a ``/config`` group). Tiny by construction; the per-(label, channel) PE
-    truth invariant (``pe_counts[pmt_id]``) holds so the reader's per-chunk
-    ``pe`` matches. The TPC-truth datasets are omitted (the loader ignores them).
+    ``schema='label'`` writes the goop ``event_NNN/label_K/{adc,offsets,pmt_id,
+    t0_ns,pe_counts}`` layout (doraemon). ``schema='east_west'`` writes
+    ``event_NNN/{east,west}/{...}`` + event-level ``pe_counts_{side}`` and an
+    ``n_pmts_per_side`` config (``light_output.h5``). Tiny by construction; the
+    per-channel PE-truth invariant (``pe_counts[pmt_id]``) holds so the reader's
+    per-chunk ``pe`` matches. TPC-truth datasets are omitted (the loader ignores
+    them). Returns ``outdir``.
     """
     sensor_dir = os.path.join(outdir, 'sensor')
     os.makedirs(sensor_dir, exist_ok=True)
     rng = np.random.default_rng(seed)
     pedestal = 100.0
-    tick_ns = 1.0
+    n_per_side = n_channels // 2 if schema == 'east_west' else n_channels
 
     for file_idx in range(n_files):
         path = os.path.join(sensor_dir,
@@ -698,37 +715,40 @@ def make_optical_sample(outdir, dataset_name='optical', n_events=2, n_files=1,
             cfg.attrs['n_events'] = n_events
             cfg.attrs['n_channels'] = n_channels
             cfg.attrs['pedestal'] = pedestal
-            cfg.attrs['tick_ns'] = tick_ns
+            cfg.attrs['tick_ns'] = 1.0
             cfg.attrs['n_bits'] = 15
             cfg.attrs['gain'] = 1.0
             cfg.attrs['baseline_noise_std'] = 0.0
             cfg.attrs['dataset_name'] = dataset_name
             cfg.attrs['file_index'] = file_idx
             cfg.attrs['global_event_offset'] = file_idx * n_events
+            if schema == 'east_west':
+                cfg.attrs['n_pmts_per_side'] = n_per_side
+            else:
+                cfg.attrs['label_key'] = 'interaction'
             for i in range(n_events):
                 evt = f.create_group(f'event_{i:03d}')
-                # a few interactions; each a handful of single-PMT chunks
-                for lab in rng.choice(n_labels * 2, size=n_labels,
-                                      replace=False):
-                    g = evt.create_group(f'label_{int(lab)}')
-                    n_chunks = int(rng.integers(1, max_chunks_per_label + 1))
-                    pmt_id = rng.integers(0, n_channels,
-                                          size=n_chunks).astype(np.int32)
-                    lens = rng.integers(4, chunk_len + 1, size=n_chunks)
-                    offsets = np.concatenate(
-                        [[0], np.cumsum(lens)]).astype(np.int64)
-                    # digitized ADC = pedestal + signal (uint16, as on disk)
-                    adc = (pedestal + rng.normal(0, 5, size=int(offsets[-1]))
-                           ).round().clip(0, (1 << 15) - 1).astype(np.uint16)
-                    t0_ns = (rng.uniform(0, 500, size=n_chunks)
-                             ).astype(np.float32)
-                    pe_counts = rng.integers(
-                        0, 50, size=n_channels).astype(np.int32)
-                    g.create_dataset('adc', data=adc)
-                    g.create_dataset('offsets', data=offsets)
-                    g.create_dataset('pmt_id', data=pmt_id)
-                    g.create_dataset('t0_ns', data=t0_ns)
-                    g.create_dataset('pe_counts', data=pe_counts)
+                if schema == 'east_west':
+                    for side in ('east', 'west'):
+                        g = evt.create_group(side)
+                        _write_optical_chunk_group(
+                            g, rng, n_per_side, max_chunks_per_label,
+                            chunk_len, pedestal)
+                        evt.create_dataset(
+                            f'pe_counts_{side}',
+                            data=rng.integers(0, 50, size=n_per_side
+                                              ).astype(np.int32))
+                else:
+                    for lab in rng.choice(n_labels * 2, size=n_labels,
+                                          replace=False):
+                        g = evt.create_group(f'label_{int(lab)}')
+                        _write_optical_chunk_group(
+                            g, rng, n_channels, max_chunks_per_label,
+                            chunk_len, pedestal)
+                        g.create_dataset(
+                            'pe_counts',
+                            data=rng.integers(0, 50, size=n_channels
+                                              ).astype(np.int32))
     return outdir
 
 

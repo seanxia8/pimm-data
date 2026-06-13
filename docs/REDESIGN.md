@@ -101,7 +101,7 @@ own offset key (same `(B,)` no-leading-0 convention). The `('instance', ok)` rol
 its rows live there, **naming the offset key `ok`** (role-declared, not suffix-bound). The
 second space can be coarser than points (instance `bbox`, `ok=<part>_inst_offset`) or finer
 (packed per-chunk waveform samples, `ok=<part>_wave_offset` — the optical loader, emitted
-via `Collect(offset_keys_dict=dict(offset='coord', wave_offset='adc'))`).
+via `Collect(offset_keys_dict=dict(offset='pmt_id', wave_offset='adc'))`).
 `instance`-role keys are concatenated at collate and `split_event` slices them by `ok`'s
 span — **never** the point `offset`. Distinct from the per-point
 `instance` *index* column (which is `point`-role: one row per point, naming each point's

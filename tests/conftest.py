@@ -119,6 +119,24 @@ def optical_data_root(tmp_path_factory):
 
 
 @pytest.fixture(scope='session')
+def optical_eastwest_data_root(tmp_path_factory):
+    """Optical east/west fixture (``light_output.h5`` schema).
+
+    Prefers ``OPTICAL_EASTWEST_DATA_ROOT`` (must contain a ``sensor/`` subdir);
+    otherwise a synthetic east/west dataset.
+    """
+    override = os.environ.get('OPTICAL_EASTWEST_DATA_ROOT')
+    if override:
+        if not os.path.isdir(os.path.join(override, 'sensor')):
+            pytest.skip(f"OPTICAL_EASTWEST_DATA_ROOT={override} has no sensor/")
+        return override
+    root = str(tmp_path_factory.mktemp('optical_ew_synth'))
+    make_optical_sample(root, dataset_name='light', n_events=3, n_files=1,
+                        n_channels=8, schema='east_west')
+    return root
+
+
+@pytest.fixture(scope='session')
 def jaxtpc_is_synthetic():
     """True when the JAXTPC fixture falls back to the synthesizer."""
     return 'JAXTPC_DATA_ROOT' not in os.environ

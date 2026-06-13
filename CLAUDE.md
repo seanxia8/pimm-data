@@ -40,9 +40,9 @@ readers/ (HDF5 → flat dict)  →  jaxtpc.py / lucid.py (flat → nested)  → 
    (`{'step': {...}, 'hits': {...}, 'labl': {...}, 'bridges': {...}}`).
    `get_data(idx)` returns raw numpy; `__getitem__` runs the transform
    pipeline. `OpticalDataset` is single-modality (`sensor`) PMT light: each
-   `sensor` row is a per-interaction waveform **chunk**; the raw samples are a
-   packed **second row-space** (`adc`, role `('instance','sensor_wave_offset')`)
-   — see "Optical" below.
+   `sensor` row is a waveform **chunk**; the raw samples are a packed **second
+   row-space** (`adc`, role `('instance','sensor_wave_offset')`) — see
+   "Optical" below.
 3. **Transforms** (`transform.py`, `detector_transforms.py`) — Pointcept-
    style registry of point-cloud augmentations. The pipeline ends with
    `Collect`, which scopes to one modality and converts numpy → torch.
@@ -109,18 +109,25 @@ JAXTPC also returns a top-level `bridges` sub-dict containing
   dense class indices.
 - **LUCiD** requires `format_version >= 3` shards. `instance` is
   `particle_idx`; `segment` is `labl.particle.category`.
-- **Optical** (`optical.py`, `readers/optical_sensor.py`) reads the doraemon
-  PMT-light `sensor/` shards (`event_NNN/label_K/{adc,offsets,pmt_id,t0_ns,
-  pe_counts}`; `label_K` = one interaction). Each chunk is a long dense
-  waveform (~36k samples; 20–50M samples/event) — per-sample point clouds are
-  infeasible, so the loader emits **chunks** as the `sensor` row-space
-  (`coord=[pmt_id,t0_tick]`, `pe`, `instance`=interaction, `length`) and packs
-  the raw samples losslessly as the **second row-space** `adc` (ΣL,) tagged
-  `('instance','sensor_wave_offset')`. Canonical `Collect` declares the second
-  offset: `offset_keys_dict=dict(offset='coord', wave_offset='adc')`. TPC truth
-  (`tpc_*`) is left on disk. Real data:
-  `/sdf/data/neutrino/doraemon/optical_test_00_00_02` (`dataset_name=
-  test_00_00_02_pixel`). The second-row-space machinery (`_roles`,
+- **Optical** (`optical.py`, `readers/optical_sensor.py`) reads goop PMT-light
+  output as per-**chunk** waveforms. Two selectable schemas (`OpticalDataset(
+  schema=...)`), same per-chunk fields: `'label'` (goop `io.py` writer /
+  doraemon — `event_NNN/label_K/{adc,offsets,t0_ns,pmt_id,pe_counts}`, group =
+  interaction) and `'east_west'` (helix `light_output.h5` —
+  `event_NNN/{east,west}/{...}` + event-level `pe_counts_{side}`, group = side,
+  per-side `pmt_id`, files globbed as `*.h5`). The single reader seam is
+  `_groups(evt)`. Chunks are long dense waveforms (label 20–50M, e/w ~6M
+  samples/event) so per-sample point clouds are infeasible: the loader emits
+  **chunks** as the `sensor` row-space (`pmt_id, t0_ns, length, pe,
+  instance`=group) and packs the raw samples losslessly as the **second
+  row-space** `adc` (ΣL,) tagged `('instance','sensor_wave_offset')`. No
+  synthetic `coord` / no separate `plane_gid` — only the fields every goop/helix
+  consumer uses; `pe` is a channel-level total within the group (shared across a
+  channel's chunks), not a per-chunk PE. Canonical `Collect`:
+  `offset_keys_dict=dict(offset='pmt_id', wave_offset='adc')`. TPC truth
+  (`tpc_*`) is left on disk. Real data: label =
+  `/sdf/data/neutrino/doraemon/optical_test_00_00_02` (`test_00_00_02_pixel`);
+  e/w = goop `light_output.h5`. The second-row-space machinery (`_roles`,
   `collate`, `batch_ops.split_event`) is role-declared, not `_inst`-suffixed.
 
 ### Tests

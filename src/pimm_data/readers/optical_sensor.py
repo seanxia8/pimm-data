@@ -1,44 +1,39 @@
 """
-OpticalSensorReader — reads per-interaction PMT light waveforms from the
-doraemon optical ``sensor/`` HDF5 files (``label_N`` schema).
+Optical PMT-light readers — per-chunk waveforms from goop light output.
 
-These shards follow pimm-data's naming (``{dataset_name}_sensor_*.h5``) and
-carry the standard ``/config`` group (``n_channels``, ``pedestal``, ``tick_ns``,
-``global_event_offset``, ``file_index``, ``n_events``), so the
-:class:`~pimm_data.readers._base.ShardReaderBase` index/locate/fork-safe
-lifecycle is reused unchanged.
+goop emits two on-disk groupings, sharing the SAME per-chunk fields
+(``adc / offsets / t0_ns / pmt_id`` + a ``pe_counts`` table):
 
-Schema (verified 2026-06-13)::
+* **label schema** (``goop/io.py`` writer; doraemon files) —
+  ``event_NNN/label_K/{adc,offsets,t0_ns,pmt_id,pe_counts}`` (+ ``tpc_*``).
+  Each ``label_K`` is one interaction/volume; the group id is the interaction.
+* **east/west schema** (``helix/optical/io.py``; ``light_output.h5``) —
+  ``event_NNN/{east,west}/{adc,offsets,t0_ns,pmt_id}`` + event-level
+  ``pe_counts_{east,west}``. The group id is the side; ``pmt_id`` is per-side.
 
-    event_NNN/label_K/
-        adc        (ΣL,)        uint16  — concatenated chunk samples (digitized)
-        offsets    (n_chunks+1,) int64  — CSR slice into adc
-        pmt_id     (n_chunks,)  int32   — global channel 0..n_channels-1
-        t0_ns      (n_chunks,)  float32 — chunk start time
-        pe_counts  (n_channels,) int32  — per-(label, channel) true PE
-        tpc_*      …                    — per-interaction TPC truth (NOT read here)
+Both read identically into per-**chunk** rows — chunks are long dense waveforms
+(label: 20–50M samples/event; east/west: ~6M), so the loader emits chunks as the
+unit and packs the raw samples losslessly (REDESIGN §3, two row-spaces). The
+only seam between schemas is :meth:`OpticalSensorReader._groups` (how an event's
+chunk groups are enumerated) and, for east/west, file discovery.
 
-Each ``label_K`` group is one interaction; its chunks are the
-*per-interaction* light contributions, so the same PMT can hold
-time-overlapping chunks under different interactions (this is the
-operator-discrimination signal, not a summed readout). The reader keeps that
-structure: one **chunk** is one row, tagged with its interaction (``label_K``).
+Per-chunk fields (what every goop/helix consumer uses — no synthetic coord):
 
-The chunks are long, dense waveforms (~36k samples each; ~1.4–3.4k chunks /
-event → 20–50M samples). A per-sample point cloud is infeasible, so the reader
-emits chunks as the unit and packs the raw samples losslessly:
-
-    pmt_id      (K,)   int32    — per-chunk channel
-    t0_ns       (K,)   float32  — per-chunk start time
-    length      (K,)   int32    — samples in each chunk
-    pe          (K,)   int32    — per-chunk true PE (pe_counts[label][pmt_id])
-    interaction (K,)   int32    — interaction (label) index
+    pmt_id      (K,)   int32    — channel (per-side for east/west)
+    t0_ns       (K,)   float32  — absolute chunk start time
+    length      (K,)   int32    — samples per chunk
+    pe          (K,)   int32    — pe_counts[group][pmt] (channel total in group,
+                                  shared across that channel's chunks; -1 if absent)
+    instance    (K,)   int32    — group id (interaction for label, side for e/w)
     adc         (ΣL,)  float32  — packed, pedestal-subtracted samples
 
-``adc`` is a SECOND row-space (samples), keyed by per-chunk ``length``; the
-dataset/Collect tag it ``('instance', 'sensor_wave_offset')`` so collate concats
-it and ``split_event`` slices it by sample count (REDESIGN §3, two row-spaces).
+``adc`` is the packed second row-space; the dataset/Collect tag it
+``('instance','sensor_wave_offset')`` so collate concats it and ``split_event``
+slices it by sample count.
 """
+
+import glob
+import os
 
 import numpy as np
 
@@ -47,23 +42,22 @@ from ._base import ShardReaderBase
 
 
 class OpticalSensorReader(ShardReaderBase):
-    """Reads per-interaction PMT light chunks from optical ``sensor/`` files.
+    """Per-chunk PMT light reader for the goop ``label_K`` schema.
 
     Parameters
     ----------
-    data_root : str
-        Directory containing the optical sensor shard files.
-    split : str
-        Split name (used as subdirectory when present).
-    dataset_name : str
-        File prefix — matches ``{dataset_name}_sensor_*.h5``.
+    data_root, split, dataset_name : str
+        Shard location (``{dataset_name}_sensor_*.h5`` under ``data_root`` /
+        ``split``), as for the other readers.
     decode_digitization : bool
         Subtract the file's ``/config`` pedestal from the uint16 ADC (default
-        True). The chunks are stored digitized; downstream noise/recon work in
-        pedestal-subtracted ADC space.
+        True) — chunks are stored digitized; downstream works in subtracted ADC.
     """
 
     _MODALITY = 'sensor'
+
+    #: Human label for the per-chunk ``instance`` group (the goop ``label_key``).
+    group_kind = 'label'
 
     def __init__(self, data_root, split='', dataset_name='optical',
                  decode_digitization=True, **kwargs):
@@ -72,11 +66,12 @@ class OpticalSensorReader(ShardReaderBase):
         self.dataset_name = dataset_name
         self.decode_digitization = decode_digitization
         # Readout geometry / digitization — cached from the first shard's config
-        # (one read via the A1 cache, no extra open). Authoritative for coord
-        # tick conversion and the pedestal subtraction.
+        # (one read via the A1 cache, no extra open).
         self.tick_ns = None
         self.pedestal = 0.0
+        self.gain = 1.0
         self.n_channels = None
+        self.n_pmts_per_side = None
         self._init_shards()
 
     def _index_for_shard(self, h5_path):
@@ -86,26 +81,39 @@ class OpticalSensorReader(ShardReaderBase):
             ca = meta['config_attrs']
             self.tick_ns = float(ca.get('tick_ns', 1.0))
             self.pedestal = float(ca.get('pedestal', 0.0))
+            self.gain = float(ca.get('gain', 1.0))
             self.n_channels = (int(ca['n_channels'])
                                if 'n_channels' in ca else None)
+            self.n_pmts_per_side = (int(ca['n_pmts_per_side'])
+                                    if 'n_pmts_per_side' in ca else None)
+            if 'label_key' in ca:
+                self.group_kind = str(ca['label_key'])
         return meta['present_events']
+
+    def _groups(self, evt):
+        """Yield ``(group_id, h5_group, pe_counts|None)`` per chunk group.
+
+        Label schema: one ``label_K`` group per interaction, sorted by id, with
+        its own per-channel ``pe_counts``.
+        """
+        for lk in sorted((k for k in evt.keys() if k.startswith('label_')),
+                         key=lambda k: int(k.split('_', 1)[1])):
+            g = evt[lk]
+            pe = g['pe_counts'][:] if 'pe_counts' in g else None
+            yield int(lk.split('_', 1)[1]), g, pe
 
     def read_event(self, idx):
         """One event → flat dict of per-chunk arrays + packed ``adc``.
 
-        Chunks are gathered across every ``label_K`` interaction group, in
-        sorted label order; within a label they are in CSR (offset) order.
+        Chunks are gathered over every group (:meth:`_groups`), in group order;
+        within a group they stay in CSR (offset) order.
         """
         f, event_key = self._locate_event(idx)
         evt = f[event_key]
         ped = self.pedestal if self.decode_digitization else 0.0
 
-        pmt, t0, length, pe, inter, adc_parts = [], [], [], [], [], []
-        for lk in sorted(evt.keys()):
-            if not lk.startswith('label_'):
-                continue
-            lab = int(lk.split('_', 1)[1])
-            g = evt[lk]
+        pmt, t0, length, pe, grp, adc_parts = [], [], [], [], [], []
+        for gid, g, pe_counts in self._groups(evt):
             pmt_id = g['pmt_id'][:].astype(np.int32)
             if pmt_id.size == 0:
                 continue
@@ -114,28 +122,57 @@ class OpticalSensorReader(ShardReaderBase):
             if ped:
                 a -= ped
             # offsets are CSR into adc; slice the covered span (tolerates a
-            # leading/trailing gap) and recover per-chunk lengths from the diff.
+            # leading/trailing gap), per-chunk lengths from the diff.
             adc_parts.append(a[int(offs[0]):int(offs[-1])])
             length.append(np.diff(offs).astype(np.int32))
             pmt.append(pmt_id)
             t0.append(g['t0_ns'][:].astype(np.float32))
-            pe.append(g['pe_counts'][:][pmt_id].astype(np.int32))  # per-chunk truth
-            inter.append(np.full(pmt_id.shape[0], lab, dtype=np.int32))
+            pe.append(pe_counts[pmt_id].astype(np.int32) if pe_counts is not None
+                      else np.full(pmt_id.shape[0], -1, np.int32))
+            grp.append(np.full(pmt_id.shape[0], gid, np.int32))
 
-        if not pmt:                       # empty event (no interactions/chunks)
-            return {
-                'pmt_id': np.empty(0, np.int32),
-                't0_ns': np.empty(0, np.float32),
-                'length': np.empty(0, np.int32),
-                'pe': np.empty(0, np.int32),
-                'interaction': np.empty(0, np.int32),
-                'adc': np.empty(0, np.float32),
-            }
+        if not pmt:                       # empty event (no groups/chunks)
+            z = lambda dt: np.empty(0, dt)
+            return {'pmt_id': z(np.int32), 't0_ns': z(np.float32),
+                    'length': z(np.int32), 'pe': z(np.int32),
+                    'instance': z(np.int32), 'adc': z(np.float32)}
         return {
             'pmt_id': np.concatenate(pmt),
             't0_ns': np.concatenate(t0),
             'length': np.concatenate(length),
             'pe': np.concatenate(pe),
-            'interaction': np.concatenate(inter),
+            'instance': np.concatenate(grp),
             'adc': np.concatenate(adc_parts),
         }
+
+
+class OpticalEastWestReader(OpticalSensorReader):
+    """Per-chunk PMT light reader for the east/west schema (``light_output.h5``).
+
+    Same per-chunk emission as the label reader; the group is the **side**
+    (``instance`` = 0 east / 1 west), ``pmt_id`` is per-side, and ``pe_counts``
+    is the event-level ``pe_counts_{side}`` table. These files are not
+    shard-named (``light_output.h5``), so discovery globs ``*.h5``.
+    """
+
+    group_kind = 'side'
+    SIDES = ('east', 'west')
+
+    def _find_files(self):
+        """Glob any ``*.h5`` under ``data_root`` (/ ``split``) — east/west files
+        are not ``{name}_sensor_*.h5`` shards."""
+        for pattern in (os.path.join(self.data_root, self.split, '*.h5'),
+                        os.path.join(self.data_root, '*.h5')):
+            files = sorted(glob.glob(pattern))
+            if files:
+                return files
+        return []
+
+    def _groups(self, evt):
+        """Yield ``(side_idx, side_group, pe_counts_{side})`` for each side."""
+        for sidx, side in enumerate(self.SIDES):
+            if side not in evt:
+                continue
+            pek = f'pe_counts_{side}'
+            pe = evt[pek][:] if pek in evt else None
+            yield sidx, evt[side], pe

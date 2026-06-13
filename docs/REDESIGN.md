@@ -83,7 +83,7 @@ and subsampling:
 |---|---|---|---|
 | **point** (default) | one row per point | concat by `offset` | slice |
 | **raw** | per-point but immutable (the densify COO: `wire/time/value/plane_gid`) | concat by `offset` | **NOT sliced** (densify needs the immutable raw COO) |
-| **instance** | one row per instance (e.g. `bbox (K,8)`) | concat by `<part>_inst_offset` | slice instances |
+| **instance** | one row per instance (e.g. `bbox (K,8)`), the part's SECOND row-space | concat by `<part>_inst_offset` | slice instances |
 | **edge** | index array into a cloud (`edge_index`) | concat + **shift** by referenced part's running node count | **remap** (drop edges to removed rows, reindex) |
 | **label** | categorical grouping id (`cluster_id`, `group_id`) | **compact per event to 0..K-1, then** concat + add running distinct-count base, joint across the declared group | slice |
 | **event** | NOT per-point (a whole-event scalar `target`, a part-summary `step_count`, or a pre-collate dense grid) | **stack** → `(B,…)` / list | leave |
@@ -94,6 +94,21 @@ are **producer-only** (a single-part `Apply` can't see the other part). `label` 
 preserves the hierarchy by **compacting per-event ids to `0..K-1` first**, then adding
 a single running distinct-count base to the *whole declared block* (raw FK ids are
 not dense, so the compaction is required — a cluster still maps to one group after).
+
+**Instance role = a part's second row-space.** A part has one row-space by default
+(points, counted by `<part>_offset`); a part with instances has a second, independent one
+(instances, counted by `<part>_inst_offset`, same `(B,)` no-leading-0 convention).
+`instance`-role keys (`bbox`) are `K` rows, so collate concats them and `split_event`
+slices them by `inst_offset` — **never** the point `offset`. Distinct from the per-point
+`instance` *index* column (which is `point`-role: one row per point, naming each point's
+instance). Three contracts the producer must honour: (1) emit per-event instance ids
+compacted to `0..K-1` so each point indexes that event's `bbox` rows directly — global
+`instance`→`bbox` indexing is a *collate output* (add `node_bases(inst_offset)[event]`),
+not renumbered in place like `label`; (2) `split_event` undoes the concat so the
+`0..K-1` ↔ row correspondence holds again per event; (3) **build instances LAST** — after
+all point subsampling, else dropping points (point space) without the matching `bbox` rows
+(instance space) desyncs the two. pimm-data carries instances through collate/split; the
+producer (InstanceParser) is pimm-side, fed in as config.
 
 **Default role = `point`.** A key is `point` if its first dim matches the part's
 `offset` total **and** it's not on the part's `raw`/`event` declaration. `_roles`

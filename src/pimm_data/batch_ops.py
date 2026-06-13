@@ -46,25 +46,39 @@ def split_event(batch, i):
     keys = [k for k in batch if k != '_roles']
     parts = _roles.parts_from_keys(keys)
 
-    # per-part [lo, hi) row span for event i, and the node base to subtract from edges
+    # per-part [lo, hi) POINT span for event i (sliced by <part>_offset).
     span = {}
-    base = {}
     for p in parts:
         off = batch[f'{p}_offset']
         lo = int(off[i - 1]) if i > 0 else 0
-        hi = int(off[i])
-        span[p] = (lo, hi)
-        base[p] = lo
+        span[p] = (lo, int(off[i]))
+
+    # per-part [lo, hi) INSTANCE span for event i (sliced by <part>_inst_offset).
+    # A part with instances has a SECOND row-space (REDESIGN §3): instance-role
+    # keys (bbox, …) are K rows indexed by inst_offset, NOT by point count — they
+    # must slice by this span, never the point span.
+    inst_span = {}
+    for k in keys:
+        if k.endswith('_inst_offset'):
+            off = batch[k]
+            lo = int(off[i - 1]) if i > 0 else 0
+            inst_span[k[:-len('_inst_offset')]] = (lo, int(off[i]))
 
     out = {}
     for key in keys:
         spec = roles.get(key)
         kind = _roles.role_kind(spec) if spec is not None else None
+        if key.endswith('_inst_offset'):                    # check before _offset
+            lo, hi = inst_span.get(key[:-len('_inst_offset')], (0, 0))
+            out[key] = batch[key].new_tensor([hi - lo])     # single-event inst count (1,)
+            continue
         if key.endswith('_offset'):
-            p = key[:-len('_offset')].removesuffix('_inst')
-            lo, hi = span.get(p, (0, 0))
-            n = hi - lo
-            out[key] = batch[key].new_tensor([n])           # single-event offset (1,)
+            lo, hi = span.get(key[:-len('_offset')], (0, 0))
+            out[key] = batch[key].new_tensor([hi - lo])     # single-event offset (1,)
+            continue
+        if kind == 'instance':                              # slice by the INSTANCE span
+            lo, hi = inst_span.get(_roles.part_of(key, parts), (0, 0))
+            out[key] = batch[key][lo:hi]
             continue
         if kind == 'edge':
             tgt = spec[1]
@@ -87,7 +101,7 @@ def split_event(batch, i):
         if kind == _roles.EVENT or _roles.part_of(key, parts) is None:
             out[key] = batch[key][i]                        # stacked (B,…) or list -> event i
             continue
-        # point / raw / instance / label -> slice this part's rows
+        # point / raw / label -> slice this part's POINT rows
         p = _roles.part_of(key, parts)
         lo, hi = span[p]
         out[key] = batch[key][lo:hi]

@@ -23,6 +23,32 @@ spec                meaning / collate behaviour
 
 This module is import-light (torch only) and has no pimm-data dependencies, so it can
 be reused by collate and by the post-collate helpers.
+
+**Two row-spaces per part.** A part normally has ONE row-space — points, counted by
+``<part>_offset``. A part that carries instances has a SECOND, independent row-space —
+instances, counted by ``<part>_inst_offset`` (cumulative, ``(B,)``, NO leading 0, same
+convention as ``offset``). ``instance``-role keys (``bbox``, per-instance attrs) live in
+this second space: they are ``K`` rows, NOT ``N`` rows, so collate concatenates them and
+:func:`split_event` slices them by ``inst_offset`` — never by the point ``offset``. The
+per-point ``instance`` *index* column is a different thing: it is ``point``-role (one row
+per point) and names which instance each point belongs to.
+
+**Per-event-local instance ids, global is a collate output.** A producer emits per-event
+instance indices compacted to ``0..K-1`` (so per-point ``instance`` indexes that event's
+``bbox`` rows ``0..K-1`` directly). After collate the ``bbox`` rows are globally
+concatenated (rows ``0..ΣK``) while the per-point ``instance`` column stays per-event-local
+(``point`` role = plain concat, NOT renumbered) — exactly like Pointcept, where ``offset``
+separates events. A consumer that wants global ``instance``→``bbox`` indexing adds
+``node_bases(<part>_inst_offset)[event]``; :func:`split_event` undoes the concat so the
+``0..K-1`` ↔ ``bbox``-row correspondence holds again per event. (Contrast ``label`` role,
+which IS globally renumbered at collate.)
+
+**Build instances LAST.** The per-point ``instance`` index ↔ ``bbox``-row correspondence
+requires contiguous ``0..K-1`` ids per event. Any instance producer (e.g. an InstanceParser
+emitting ``bbox`` + ``inst_offset``) MUST therefore run AFTER all point subsampling — a
+subsample that drops points but not the matching ``bbox`` rows (``instance`` keys are
+``index_operator``-sliced by the instance space, points by the point space) would desync the
+two. pimm-data carries instances through collate/split correctly; the producer is pimm-side.
 """
 
 from __future__ import annotations

@@ -53,3 +53,42 @@ def test_split_event_cross_store():
     ev1 = split_event(b, 1)
     assert ev1['nexus_edge_index'].tolist() == [[1], [0]]   # rebased: hit-3, sp-2
     assert ev1['hit_pos'].shape[0] == 2 and ev1['sp_pos'].shape[0] == 1
+
+
+# --- instance role: a part's SECOND row-space (REDESIGN §3) ---------------
+def _mk_inst(n_pts, inst_idx, bbox, name):
+    """A 'step' part with two row-spaces: per-point instance index (point role,
+    sliced by step_offset) + a per-instance bbox (instance role, sliced by the
+    distinct step_inst_offset)."""
+    return {'step_coord': torch.arange(n_pts * 3, dtype=torch.float32).reshape(n_pts, 3),
+            'step_offset': torch.tensor([n_pts]),
+            'step_instance': torch.tensor(inst_idx),
+            'step_bbox': bbox,
+            'step_inst_offset': torch.tensor([bbox.shape[0]]),
+            'name': name,
+            '_roles': {'step_bbox': ('instance', 'step_inst_offset')}}
+
+
+def test_instance_role_collate_and_split_uses_inst_offset():
+    a = _mk_inst(3, [0, 0, 1], torch.tensor([[10., 11.], [12., 13.]]), 'a')  # 3 pts, 2 inst
+    b = _mk_inst(2, [0, 0], torch.tensor([[20., 21.]]), 'b')                  # 2 pts, 1 inst
+    batch = collate_fn([a, b])
+
+    # two independent row-spaces survive collate, each its OWN cumulative offset
+    assert batch['step_offset'].tolist() == [3, 5]              # points
+    assert batch['step_inst_offset'].tolist() == [2, 3]         # instances
+    assert batch['step_bbox'].shape == (3, 2)                   # 2+1 instance rows concat
+    assert batch['step_instance'].tolist() == [0, 0, 1, 0, 0]   # per-point, per-event-local
+
+    ev1 = split_event(batch, 1)
+    # bbox sliced by the INSTANCE span (2,3) -> b's single row, NOT the point span (3,5)
+    assert ev1['step_bbox'].tolist() == [[20., 21.]]
+    assert ev1['step_inst_offset'].tolist() == [1]
+    assert ev1['step_coord'].shape[0] == 2
+    assert ev1['step_instance'].tolist() == [0, 0]              # point span, per-event-local
+    assert ev1['step_offset'].tolist() == [2]
+
+    ev0 = split_event(batch, 0)
+    assert ev0['step_bbox'].tolist() == [[10., 11.], [12., 13.]]
+    assert ev0['step_inst_offset'].tolist() == [2]
+    assert ev0['step_instance'].tolist() == [0, 0, 1]

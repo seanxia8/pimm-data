@@ -11,6 +11,56 @@ import numpy as np
 import torch
 from torch.utils.data.dataloader import default_collate
 
+from . import _roles
+
+
+def collate_with_roles(samples):
+    """Role-driven reduce for the flat-prefixed batch contract (REDESIGN.md §5).
+
+    Each sample is a flat dict of underscore-prefixed keys (``step_coord``,
+    ``step_offset``) optionally carrying a ``_roles`` map (key -> role spec, §3).
+    Dispatch per key by role: point/raw -> concat by offset; offset -> cumsum;
+    edge -> concat+shift; label -> compact+distinct-renumber; instance -> concat
+    (its ``*_inst_offset`` cumsums); event / unprefixed -> stack/list. ``_roles``
+    is carried through (post-collate consumers need it). ``offset`` stays ``(B,)``
+    no-leading-0.
+    """
+    roles = samples[0].get('_roles', {})
+    keys = [k for k in samples[0] if k != '_roles']
+    parts = _roles.parts_from_keys(keys)
+    col = lambda key: [s[key] for s in samples]
+    offs = lambda part: [s[f'{part}_offset'] for s in samples]
+    out = {}
+    for key in keys:
+        spec = roles.get(key)
+        if key.endswith('_offset'):
+            out[key] = _roles.cat_offset(col(key)); continue
+        kind = _roles.role_kind(spec) if spec is not None else None
+        if kind == _roles.EVENT:
+            out[key] = _roles.stack_event(col(key))
+        elif kind == 'edge':
+            tgt = spec[1]
+            if tgt == 'self':
+                out[key] = _roles.cat_edge_self(col(key), offs(_roles.part_of(key, parts)))
+            else:
+                src, dst = tgt
+                out[key] = _roles._shift_concat(col(key), offs(src), offs(dst))
+        elif kind == 'label':
+            out[key] = _roles.cat_label_col(col(key))
+        elif kind in (_roles.POINT, _roles.RAW, 'instance'):
+            out[key] = _roles.cat_point(col(key))
+        elif spec is None:
+            # default: belongs to a part -> point (concat); else whole-event -> stack/list
+            if _roles.part_of(key, parts) is not None:
+                out[key] = _roles.cat_point(col(key))
+            else:
+                out[key] = _roles.stack_event(col(key))
+        else:
+            raise ValueError(f"collate: unhandled role {spec!r} for {key!r}")
+    if roles:
+        out['_roles'] = roles
+    return out
+
 
 def collate_fn(batch, mix_prob=0):
     """
@@ -19,6 +69,11 @@ def collate_fn(batch, mix_prob=0):
     """
     if not isinstance(batch, Sequence):
         raise TypeError(f"{batch.dtype} is not supported.")
+
+    # Roles-aware flat-prefixed path (REDESIGN): a sample carrying `_roles` is
+    # collated by role. No `_roles` -> the legacy path below, byte-identical.
+    if isinstance(batch[0], Mapping) and '_roles' in batch[0]:
+        return collate_with_roles(batch)
 
     if isinstance(batch[0], torch.Tensor):
         return torch.cat(list(batch))

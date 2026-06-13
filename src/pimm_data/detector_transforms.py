@@ -173,6 +173,48 @@ class BuildNexus:
 
 
 @TRANSFORMS.register_module()
+class Align:
+    """Reorder parts row-for-row to match a reference part (REDESIGN §8).
+
+    Multi-task per-voxel heads need parts (e.g. ``image`` and ``cluster``) aligned
+    row-for-row. ``Align(to='image', parts=('cluster',))`` permutes each listed
+    part's per-point rows so row ``i`` corresponds to ``image.coord[i]`` (SPINE's
+    ``clean_sparse_data``). Each aligned part must hold the SAME coord set as ``to``.
+    """
+
+    def __init__(self, to, parts, coord_key='coord'):
+        self.to = to
+        self.parts = [parts] if isinstance(parts, str) else list(parts)
+        self.coord_key = coord_key
+
+    def __call__(self, data_dict):
+        ref = np.asarray(data_dict[self.to][self.coord_key])
+        ref_rows = [tuple(r) for r in ref.tolist()]
+        for p in self.parts:
+            part = data_dict[p]
+            pc = np.asarray(part[self.coord_key])
+            if pc.shape[0] != ref.shape[0]:
+                raise ValueError(
+                    f"Align: part {p!r} has {pc.shape[0]} rows != reference "
+                    f"{self.to!r} ({ref.shape[0]}); can only align identical coord sets.")
+            pos = {tuple(r): j for j, r in enumerate(pc.tolist())}
+            try:
+                order = np.array([pos[r] for r in ref_rows], dtype='int64')
+            except KeyError as e:
+                raise ValueError(
+                    f"Align: part {p!r} coord row {e} not found in reference "
+                    f"{self.to!r} — coord sets differ.") from None
+            n = ref.shape[0]
+            for k, v in list(part.items()):
+                if k == '_roles':
+                    continue
+                arr = v
+                if hasattr(arr, 'shape') and getattr(arr, 'ndim', 0) >= 1 and arr.shape[0] == n:
+                    part[k] = arr[order]
+        return data_dict
+
+
+@TRANSFORMS.register_module()
 class MultiCrop:
     """Produce packed multi-crop view PARTS from a source part (SSL multi-view).
 

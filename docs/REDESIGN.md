@@ -452,3 +452,28 @@ relevant phase):
 - **`Align` must be the last pre-`Collect` structural op** for the part it aligns
   (a later subsample would desync). (Phase 4)
 - **`name` is guaranteed present + list-typed post-collate** (seed identity). (Phase 5)
+
+---
+
+## 16. Implementation status (branch `redesign-flat-parts`)
+
+**DONE — committed, suite 370 passed:**
+- Roles + role-driven `collate` (`_roles.py`, `collate_with_roles`); `offset` `(B,)`.
+- Flat-prefixed `Collect` (namespaced → `step_*` + `_roles`); single bare unchanged
+  (PF1 golden intact); `offset_keys_dict={}` suppress fixed; build-time validation.
+- `Apply(on=)` implicit-shared (no flag); `ApplyToModalities` folded/deleted;
+  `ApplyToModality` back-compat alias.
+- `Streams` deleted → `MultiCrop` (packed `global_*`/`local_*` views, all in pimm-data).
+- Producers: `SetupGraph` (self edges), `BuildNexus` (cross-store), `Align`
+  (multi-task row alignment) — graph ops in **torch** (`cdist`/`topk`).
+- `index_operator` roles-aware self-edge remap (subsample/graph order-independent).
+- Dense path (`BatchDensify/AddNoise/Digitize`) reads/writes flat `sensor_*`.
+- Helpers: `to_batched_coords`, `split_event`/`batch[i]`.
+
+**Deliberately deferred (not omissions):**
+- numpy `Densify/AddNoise/Digitize` still work as pre-collate transforms via `Apply`
+  scoping (sub-dict); a flat `on=` rewrite is optional cleanup, not correctness.
+- One-list split / Lightning `on_after_batch_transfer` wiring: `apply_batch_transforms`
+  is the tail-runner; the auto-split of a single config list is trainer integration.
+- pimm-side config/model migration (nested→flat keys, `Apply(on=)`, `MultiCrop`) —
+  pimm's repo, config-level (pimm calls pimm-data).

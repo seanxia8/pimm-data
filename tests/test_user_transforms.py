@@ -1,18 +1,17 @@
-"""Uniform user-transform authoring across the collate pivot.
+"""Uniform user-transform authoring.
 
-The point of the restructure: a user writes ONE dict->dict callable and the
-harness places it — pre-collate (per-event, CPU) via Compose, or post-collate
-(per-batch, on device) via apply_batch_transforms — with no registration and no
-two-variant burden. These tests lock that both ends accept bare callables and
-that the scope='batch' fence catches a misplacement.
+A user writes ONE dict->dict callable and places it in the SAME Compose, pre- or
+post-collate — there is no separate batch-transform runner. These tests lock that
+Compose runs bare callables and the dense ops (scope='sample'), and that the
+scope='batch' fence still catches a genuine cross-sample transform pre-collate.
 """
 import numpy as np
 import pytest
 import torch
 
 from pimm_data.transform import Compose
-from pimm_data.batch_transforms import (apply_batch_transforms, build_batch_transforms,
-                                        BatchDensify, ToDevice)
+from pimm_data.batch_transforms import (BatchDensify, BatchAddIntrinsicNoise,
+                                        BatchDigitize, ToDevice)
 
 
 def test_precollate_bare_callable():
@@ -28,92 +27,37 @@ def test_precollate_bare_callable():
     assert seen.get('ran') and out['marker'] == 1
 
 
-def test_postcollate_bare_callable():
-    """apply_batch_transforms runs a bare user callable fn(batch)->batch as a
-    post-collate stage — same authoring as pre-collate, no seeds= plumbing."""
-    def gpu_scale(batch):                       # a user GPU op; no seeds kwarg
+def test_postcollate_bare_callable_in_compose():
+    """A bare user fn(batch)->batch runs post-collate via the ORDINARY Compose —
+    no runner, no seeds plumbing. ToDevice is just another transform in the list."""
+    def gpu_scale(batch):
         batch['feat'] = batch['feat'] * 2
         return batch
 
     batch = {'feat': torch.ones(4, 2), 'offset': torch.tensor([4]), 'name': ['e0']}
-    out = apply_batch_transforms(batch, [gpu_scale], device='cpu')
+    out = Compose([dict(type='ToDevice', device='cpu'), gpu_scale])(batch)
+    assert out['feat'].device == torch.device('cpu')
     assert torch.equal(out['feat'], torch.full((4, 2), 2.0))
 
 
-def test_postcollate_seeded_stage_still_gets_seeds():
-    """A stage that DOES take seeds= still receives them (protocol unchanged)."""
-    captured = {}
-
-    def seeded(batch, *, seeds):
-        captured['seeds'] = list(seeds)
-        return batch
-
-    batch = {'offset': torch.tensor([2, 5]), 'name': ['a', 'b']}
-    apply_batch_transforms(batch, [seeded], device='cpu', base_seed=7)
-    assert len(captured['seeds']) == 2 and all(isinstance(s, int) for s in captured['seeds'])
+def test_dense_ops_are_scope_sample_and_compose():
+    """densify/noise/digitize are scope='sample' (per-single) -> run in a plain
+    Compose alongside ToDevice (the fence does NOT block them)."""
+    for cls in (ToDevice, BatchDensify, BatchAddIntrinsicNoise, BatchDigitize):
+        assert getattr(cls, 'scope', None) == 'sample'
+    Compose([dict(type='ToDevice', device='cpu'),
+             dict(type='BatchDensify', geom={}, modality='sensor')])   # no fence error
 
 
-def test_mixed_user_and_library_stages():
-    """User bare callable and a library scope='batch' stage compose in one list."""
-    calls = []
-    out = apply_batch_transforms(
-        {'feat': torch.ones(1, 1), 'offset': torch.tensor([1]), 'name': ['e0']},
-        [lambda b: (calls.append('user'), b)[1],
-         lambda b, *, seeds: (calls.append('seeded'), b)[1]],
-        device='cpu')
-    assert calls == ['user', 'seeded']
-
-
-def test_compose_rejects_scope_batch():
-    """A scope='batch' transform placed pre-collate is caught at build time."""
-    stage = BatchDensify({}, modality='sensor')
-    assert getattr(stage, 'scope', None) == 'batch'
-    with pytest.raises(ValueError, match="scope='batch'"):
-        Compose([stage])
-
-
-# --- general batch-transform builder + device-as-transform ------------------
-
-def test_build_batch_transforms_from_config_and_callables():
-    """The post-collate analog of Compose: builds registry dicts AND bare callables
-    into one stage list — no bespoke per-purpose builder needed."""
-    stages = build_batch_transforms([
-        dict(type='ToDevice', device='cpu'),
-        lambda b: b,
-    ])
-    assert isinstance(stages[0], ToDevice) and stages[0].device == 'cpu'
-    assert callable(stages[1])
-
-
-def test_todevice_as_transform_equiv_to_device_arg():
-    """ToDevice as the first stage == passing device= to the runner (same result)."""
-    def mk():
-        return {'feat': torch.ones(3, 2), 'offset': torch.tensor([3]), 'name': ['e0']}
-
-    via_arg   = apply_batch_transforms(mk(), [lambda b: b], device='cpu')
-    via_stage = apply_batch_transforms(
-        mk(), build_batch_transforms([dict(type='ToDevice', device='cpu'),
-                                      lambda b: b]))   # no device= argument
-    assert via_stage['feat'].device == via_arg['feat'].device
-    assert torch.equal(via_stage['feat'], via_arg['feat'])
-
-
-def test_build_batch_transforms_warns_on_scope_sample():
-    """A scope='sample' transform in a batch list is built but warned (it belongs
-    in the pre-collate Compose)."""
-    class PerEvent:
-        scope = 'sample'
+def test_compose_rejects_genuine_scope_batch():
+    """A genuine cross-sample (scope='batch') transform is still fenced pre-collate."""
+    class CrossSample:
+        scope = 'batch'
         def __call__(self, b):
             return b
 
-    with pytest.warns(RuntimeWarning, match="scope='sample'"):
-        build_batch_transforms([PerEvent()])
-
-
-def test_compose_rejects_todevice():
-    """ToDevice is scope='batch' → the pre-collate fence rejects it too."""
     with pytest.raises(ValueError, match="scope='batch'"):
-        Compose([dict(type='ToDevice', device='cpu')])
+        Compose([CrossSample()])
 
 
 # --- densify output key is neutral + modality-agnostic (no sensor assumption) ---

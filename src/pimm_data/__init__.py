@@ -51,8 +51,6 @@ from .batch_ops import to_batched_coords, split_event
 # Post-collate, on-device batch transforms (the dense GPU path runner)
 from . import dense_ops  # noqa: F401
 from .batch_transforms import (
-    apply_batch_transforms,
-    build_batch_transforms,
     sensor_dense_cfg,
     build_sensor_gpu_stages,
     move_to_device,
@@ -85,9 +83,7 @@ __all__ = [
     "LUCiDHitsReader",
     "LUCiDLablReader",
     "build_joint_index",
-    # post-collate batch transform path
-    "apply_batch_transforms",
-    "build_batch_transforms",
+    # post-collate dense transforms (run via Compose; no batch-transform runner)
     "sensor_dense_cfg",
     "build_sensor_gpu_stages",
     "move_to_device",

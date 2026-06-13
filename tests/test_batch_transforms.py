@@ -13,8 +13,9 @@ import numpy as np
 import pytest
 import torch
 
-from pimm_data import (JAXTPCDataset, collate_fn, apply_batch_transforms,
+from pimm_data import (JAXTPCDataset, collate_fn,
                        build_sensor_gpu_stages, move_to_device)
+from pimm_data.transform import Compose
 from pimm_data import dense_ops
 from pimm_data.jaxtpc import canonical_plane_id
 from pimm_data.detector_transforms import Densify
@@ -148,40 +149,40 @@ def test_digitize_matches_numpy():
 
 
 # --------------------------------------------------------------------------
-# runner — end to end
+# dense chain — end to end (Compose; no runner)
 # --------------------------------------------------------------------------
 
-def test_apply_batch_transforms_end_to_end(jaxtpc_data_root):
+def test_dense_chain_end_to_end(jaxtpc_data_root):
     ds, batch = _sensor_batch(jaxtpc_data_root, B=2)
     geom = ds.plane_geometry()
-    stages = build_sensor_gpu_stages(geom, coherent=True, incoherent=True, n_bits=12)
-    out = apply_batch_transforms(deepcopy(batch), stages, device='cpu',
-                                 base_seed=0, epoch=0, rank=0)
+    stages = build_sensor_gpu_stages(geom, device='cpu', coherent=True,
+                                     incoherent=True, n_bits=12)
+    out = stages(deepcopy(batch))                       # a runnable Compose
     assert 'dense' in out
     for gid, g in out['dense'].items():
         assert g.shape[0] == 2
         assert g.shape[1:] == (geom[gid]['n_wires'], geom[gid]['n_ticks'])
         ped = geom[gid].get('pedestal', 0)
-        # digitized -> integer-valued, in [-ped, 4095-ped]
-        assert torch.allclose(g, torch.round(g))
+        assert torch.allclose(g, torch.round(g))        # digitized
         assert g.min() >= -ped - 1e-3 and g.max() <= 4095 - ped + 1e-3
 
 
-def test_apply_batch_transforms_per_event_reproducible(jaxtpc_data_root):
+def test_dense_per_event_reproducible(jaxtpc_data_root):
     ds, batch = _sensor_batch(jaxtpc_data_root, B=2)
     geom = ds.plane_geometry()
-    mk = lambda: build_sensor_gpu_stages(geom, coherent=True, incoherent=False)
-    a = apply_batch_transforms(deepcopy(batch), mk(), device='cpu', base_seed=5)
-    b = apply_batch_transforms(deepcopy(batch), mk(), device='cpu', base_seed=5)
-    c = apply_batch_transforms(deepcopy(batch), mk(), device='cpu', base_seed=6)
+    mk = lambda seed: build_sensor_gpu_stages(geom, device='cpu', base_seed=seed,
+                                              coherent=True, incoherent=False)
+    a = mk(5)(deepcopy(batch))                          # noise self-seeds from name
+    b = mk(5)(deepcopy(batch))
+    c = mk(6)(deepcopy(batch))
     g0 = sorted(a['dense'])[0]
     assert torch.equal(a['dense'][g0], b['dense'][g0])
     assert not torch.equal(a['dense'][g0], c['dense'][g0])
 
 
-def test_empty_stages_is_move_only(jaxtpc_data_root):
+def test_todevice_only_is_move_no_dense(jaxtpc_data_root):
     _, batch = _sensor_batch(jaxtpc_data_root, B=2)
-    out = apply_batch_transforms(deepcopy(batch), [], device='cpu')
+    out = Compose([dict(type='ToDevice', device='cpu')])(deepcopy(batch))
     assert 'dense' not in out
     assert torch.equal(out['wire'], batch['wire'])
 
@@ -352,8 +353,9 @@ def test_incoherent_rms_on_cuda():
 def test_end_to_end_on_cuda(jaxtpc_data_root):
     ds, batch = _sensor_batch(jaxtpc_data_root, B=2)
     geom = ds.plane_geometry()
-    stages = build_sensor_gpu_stages(geom, coherent=True, incoherent=True, n_bits=12)
-    out = apply_batch_transforms(deepcopy(batch), stages, device='cuda', base_seed=0)
+    stages = build_sensor_gpu_stages(geom, device='cuda', coherent=True,
+                                     incoherent=True, n_bits=12)
+    out = stages(deepcopy(batch))
     for gid, g in out['dense'].items():
         assert g.device.type == 'cuda'
         assert torch.allclose(g, torch.round(g))  # digitized

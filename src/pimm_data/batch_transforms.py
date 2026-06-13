@@ -1,59 +1,33 @@
 """
-Post-collate, on-device batch transforms — the runner pimm-data owns.
+Post-collate, on-device dense transforms (REDESIGN).
 
-Workers stay CPU/sparse; the dense path runs here, once per batch, in the main
-process. Post-collate transforms are built from config by
-:func:`build_batch_transforms` (the batch-side analog of
-:class:`pimm_data.transform.Compose`) and run by :func:`apply_batch_transforms` on
-the collated tensors; the dense grids are born on-device. Device-agnostic: a
-``ToDevice('cpu')`` stage (or ``device='cpu'``) runs the exact same transforms on
-CPU (tests / no-GPU). This module imports ``torch`` but never ``torch.cuda``.
+There is **no batch-transform concept and no runner**: the dense ops are ordinary
+``scope='sample'`` transforms placed *after* a ``ToDevice`` step and run by the plain
+:class:`pimm_data.transform.Compose` (or any loop). The dense grids are born
+on-device; pass ``ToDevice('cpu')`` to run the same transforms on CPU.
 
-Built-in batch transforms (registered, ``scope='batch'``):
+Registered transforms (all ``scope='sample'`` — per-event independent):
 
-* ``ToDevice``         — move the batch to a device (device-as-transform)
-* ``BatchDensify``     — sparse ``wire/time/value/plane_gid/offset`` -> ``batch[dense_key]={gid:(B,W,T)}``
-* ``BatchAddIntrinsicNoise`` — fresh coherent (+optional incoherent) noise per event
-* ``BatchDigitize``    — quantize to ADC codes
+* ``ToDevice``               — move the batch to a device (the device step)
+* ``BatchDensify``           — sparse ``<m>_wire/time/value/plane_gid/offset`` -> ``<m>_dense={gid:(B,W,T)}``
+* ``BatchAddIntrinsicNoise`` — fresh coherent (+optional incoherent) noise; **self-seeds**
+  from ``batch['name']`` (+ optional ``batch['_epoch']``/``_rank``) — no runner injects seeds
+* ``BatchDigitize``          — quantize to ADC codes
 
-The dense sensor chain is just one config — :func:`sensor_dense_cfg` returns it as
-``dict(type=…)`` entries to splat into :func:`build_batch_transforms`; there is no
-bespoke builder it requires. pimm-data stages take ``(batch, *, seeds)``; a user
-stage is a bare ``fn(batch) -> batch``. They mutate/return the batch dict:
+Each is ``fn(batch) -> batch`` (flat-prefixed keys; ``modality=`` sets the prefix,
+``None`` = bare). :func:`sensor_dense_cfg` returns the standard chain as config;
+:func:`build_sensor_gpu_stages` wraps it in a ``Compose`` you call on the batch.
 
-* ``BatchDensify``      — sparse ``wire/time/value/plane_gid/offset`` -> ``batch[dense_key]={gid:(B,W,T)}``
-* ``BatchAddIntrinsicNoise`` — fresh coherent (+optional incoherent) noise per event
-* ``BatchDigitize``     — quantize to ADC codes
-
-**User stages (the post-collate half of the uniform-transform path).** A stage is
-just a callable. pimm-data's own stages take ``(batch, *, seeds)``; a *user* stage
-is a bare ``fn(batch) -> batch`` (a lambda, an ``nn.Module``, a pre-built object) —
-the runner inspects the signature (:func:`_accepts_seeds`) and omits ``seeds`` when
-the callable doesn't declare it, so a GPU op is first-class with no registration and
-no ``seeds`` plumbing, exactly like a pre-collate ``Compose`` entry. Contract for a
-user stage: operate on the **collated, on-device** batch (tensors, ``offset``-keyed
-ragged layout); keep any per-point array length-consistent with ``offset``; do not
-drop ``name``/``split`` (the seed-identity carriers); a stage that needs the collated
-set is ``scope='batch'`` (the default for these) and must NOT be placed in ``Compose``
-(the build-time fence rejects it). Anything stateful/learned belongs to the model,
-not here — the runner is an optional convenience, not a required phase.
-
-Seeds are **content-addressed** per event (``blake2b(name) ^ base_seed ^ epoch ^
-rank``), so the same event gets the same noise regardless of **batch position,
-worker, or resume**. Caveats: ``rank`` is folded in to decorrelate DDP replicas,
-so changing ``world_size`` (which re-partitions events across ranks) changes the
-realization; and the **incoherent** component draws on a torch ``Generator`` whose
-CPU and CUDA streams differ for the same seed, so incoherent realizations are
-**device-specific** (coherent uses a numpy Generator and is device-independent /
-bit-exact to JAXTPC). Geometry comes from a registry (e.g.
-``JAXTPCDataset.plane_geometry()``) passed to the stages — not carried per-sample
-through collate.
+Seeds are content-addressed per event (``blake2b(name|base_seed|epoch|rank)``), so
+the same event gets the same noise across batch position / worker / resume. The
+**incoherent** component uses a torch ``Generator`` whose CPU/CUDA streams differ, so
+incoherent realizations are device-specific (coherent uses numpy, device-independent).
+Geometry is a registry baked into the transform, not carried per-sample.
 """
 
 from __future__ import annotations
 
 import hashlib
-import inspect
 import warnings
 
 import torch
@@ -89,49 +63,23 @@ def content_seed(event_name, base_seed=0, epoch=0, rank=0):
     return int.from_bytes(h, 'little') & ((1 << 63) - 1)
 
 
-def _batch_seeds(batch, base_seed, epoch, rank, n):
+def _seeds_for(batch, base_seed):
+    """Per-event content-addressed seeds from ``batch['name']`` (self-contained — no
+    runner injects them). Epoch/rank are read from optional ``batch['_epoch']`` /
+    ``batch['_rank']`` the trainer may stamp (default 0 = stable within a run)."""
     names = batch.get('name')
     if isinstance(names, str):
         names = [names]
+    epoch = int(batch.get('_epoch', 0)) if not torch.is_tensor(batch.get('_epoch')) else int(batch['_epoch'])
+    rank = int(batch.get('_rank', 0)) if not torch.is_tensor(batch.get('_rank')) else int(batch['_rank'])
     if not names:
-        # No per-event id -> we cannot content-address. A position-based fallback
-        # is NOT reproducible across shuffles/runs, so warn loudly rather than
-        # silently give wrong reproducibility.
         warnings.warn(
-            "AddNoise: batch has no 'name' -> seeding falls back to batch "
-            "position, which is NOT reproducible across shuffles/epochs/runs. "
-            "Ensure Collect passes 'name' through.", RuntimeWarning, stacklevel=2)
-        names = [f"_idx{i}" for i in range(n)]
+            "AddNoise: batch has no 'name' -> seeding falls back to batch position, "
+            "NOT reproducible across shuffles/epochs/runs. Ensure Collect passes "
+            "'name' through.", RuntimeWarning, stacklevel=2)
+        # length B from the dense grid is unknown here; caller passes count via name
+        return None
     return [content_seed(nm, base_seed, epoch, rank) for nm in names]
-
-
-def _batch_size(batch, offset_key='offset'):
-    off = batch.get(offset_key)
-    if off is not None:
-        return int(off.numel())
-    return 1
-
-
-def _accepts_seeds(stage):
-    """Does this post-collate stage take a ``seeds=`` kwarg?
-
-    pimm-data's own stages (``BatchDensify`` …) take ``(batch, *, seeds)``; a
-    *user* stage is just a bare callable ``fn(batch) -> batch`` (a lambda, an
-    ``nn.Module``, a pre-built transform), exactly like a pre-collate ``Compose``
-    entry. The runner inspects the signature so both forms are first-class on the
-    post-collate side — no registration, no required ``seeds`` plumbing. A stage
-    with ``**kwargs`` is assumed to absorb ``seeds`` (our protocol); an
-    un-introspectable callable (C/builtin) is assumed to follow the stage protocol.
-    """
-    fn = stage if (inspect.isfunction(stage) or inspect.ismethod(stage)) \
-        else getattr(stage, '__call__', stage)
-    try:
-        params = inspect.signature(fn).parameters
-    except (ValueError, TypeError):
-        return True
-    if 'seeds' in params:
-        return True
-    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 # ── batch transforms (post-collate; registered, scope='batch') ───────────────
@@ -146,7 +94,7 @@ class ToDevice:
     copy). ``scope='batch'`` so the pre-collate ``Compose`` fence keeps it post-collate.
     """
 
-    scope = 'batch'
+    scope = 'sample'
 
     def __init__(self, device, *, non_blocking=True):
         self.device = device
@@ -160,7 +108,7 @@ class ToDevice:
 class BatchDensify:
     """Sparse hits -> per-plane dense grids ``batch[dense_key] = {gid: (B,W,T)}``."""
 
-    scope = 'batch'  # needs the collated set (B, offset) — post-collate only
+    scope = 'sample'  # per-event independent; placed post-collate by cost
 
     def __init__(self, geom, *, modality=None, wire_key='wire', time_key='time',
                  value_key='value', plane_key='plane_gid', offset_key='offset',
@@ -170,7 +118,7 @@ class BatchDensify:
         self.wire_key, self.time_key, self.value_key = wire_key, time_key, value_key
         self.plane_key, self.offset_key, self.dense_key = plane_key, offset_key, dense_key
 
-    def __call__(self, batch, *, seeds=None):
+    def __call__(self, batch):
         # REDESIGN: flat-prefixed keys. modality=None → bare keys (`wire`, `dense`);
         # modality='sensor' → flat `sensor_wire` … `sensor_dense`.
         pfx = f'{self.modality}_' if self.modality is not None else ''
@@ -197,10 +145,10 @@ class BatchDensify:
 class BatchAddIntrinsicNoise:
     """Add fresh per-event coherent (+optional incoherent) noise to the grids."""
 
-    scope = 'batch'  # operates on the batched dense grid
+    scope = 'sample'  # per-event independent (per-event seed/elementwise)
 
-    def __init__(self, geom, *, modality=None, coherent=True, incoherent=False,
-                 dense_key='dense', enc=DEFAULT_ENC,
+    def __init__(self, geom, *, modality=None, base_seed=0, coherent=True,
+                 incoherent=False, dense_key='dense', enc=DEFAULT_ENC,
                  sampling_rate_hz=DEFAULT_SAMPLING_RATE_HZ,
                  group_size=DEFAULT_GROUP_SIZE, coh_rms=DEFAULT_COH_RMS_ADC,
                  coh_corner_freq_hz=DEFAULT_COH_CORNER_FREQ_HZ,
@@ -208,6 +156,7 @@ class BatchAddIntrinsicNoise:
                  series_spectrum=None):
         self.geom = geom
         self.modality = modality
+        self.base_seed = int(base_seed)
         self.coherent, self.incoherent = bool(coherent), bool(incoherent)
         self.dense_key = dense_key
         self.enc = tuple(enc)
@@ -216,10 +165,17 @@ class BatchAddIntrinsicNoise:
                        coh_spectral_slope=coh_spectral_slope, beta=beta,
                        series_spectrum=series_spectrum)
 
-    def __call__(self, batch, *, seeds):
+    def __call__(self, batch):
+        # SELF-CONTAINED seeding: derive per-event seeds from batch['name'] here, so
+        # no runner needs to inject them — this transform is a plain fn(batch)->batch.
         pfx = f'{self.modality}_' if self.modality is not None else ''
+        grids = batch[pfx + self.dense_key]
+        seeds = _seeds_for(batch, self.base_seed)
+        if seeds is None:                                  # no 'name' -> position fallback
+            seeds = [content_seed(f"_idx{i}", self.base_seed)
+                     for i in range(next(iter(grids.values())).shape[0])]
         dense_ops.add_intrinsic_noise(
-            batch[pfx + self.dense_key], self.geom, seeds=seeds, enc=self.enc,
+            grids, self.geom, seeds=seeds, enc=self.enc,
             coherent=self.coherent, incoherent=self.incoherent, **self.kw)
         return batch
 
@@ -228,7 +184,7 @@ class BatchAddIntrinsicNoise:
 class BatchDigitize:
     """Quantize per-plane grids to ADC codes (pedestal from registry or override)."""
 
-    scope = 'batch'  # operates on the batched dense grid
+    scope = 'sample'  # per-event independent (per-event seed/elementwise)
 
     def __init__(self, geom=None, *, modality=None, pedestal=None, n_bits=12,
                  adc_max=None, gain=1.0, dense_key='dense'):
@@ -238,7 +194,7 @@ class BatchDigitize:
         self.n_bits, self.adc_max, self.gain = n_bits, adc_max, gain
         self.dense_key = dense_key
 
-    def __call__(self, batch, *, seeds=None):
+    def __call__(self, batch):
         pfx = f'{self.modality}_' if self.modality is not None else ''
         ped = self.pedestal
         if ped is None:
@@ -249,66 +205,19 @@ class BatchDigitize:
         return batch
 
 
-# ── builder (the post-collate analog of transform.Compose) ───────────────────
-def build_batch_transforms(cfg):
-    """Build a post-collate transform list from config — the batch-side analog of
-    :class:`pimm_data.transform.Compose`.
-
-    Each entry is either a registry config ``dict(type='BatchDensify', …)`` (any
-    ``scope='batch'`` transform — ``ToDevice``, ``BatchDensify``,
-    ``BatchAddIntrinsicNoise``, ``BatchDigitize``, or your own registered one) or a
-    bare callable (a user GPU op / ``nn.Module``). Returns the list to hand to
-    :func:`apply_batch_transforms`. This is the general mechanism; the dense sensor
-    chain is just one config you can build with it (see :func:`sensor_dense_cfg`).
-
-    Unlike ``Compose`` (pre-collate), this is where a ``scope='batch'`` transform
-    belongs; a ``scope='sample'`` entry is built but **warned** (it almost always
-    wants the pre-collate ``Compose`` instead).
-    """
-    stages = []
-    for entry in (cfg or []):
-        if isinstance(entry, dict):
-            t = TRANSFORMS.build(entry)
-        elif callable(entry):
-            t = entry
-        else:
-            raise TypeError(
-                "build_batch_transforms entries must be dict (registry config) or "
-                f"callable, got {type(entry).__name__}")
-        if getattr(t, 'scope', 'batch') == 'sample':
-            warnings.warn(
-                f"{type(t).__name__} is scope='sample' (per-event) — it usually "
-                "belongs in the pre-collate Compose, not a batch transform list.",
-                RuntimeWarning, stacklevel=2)
-        stages.append(t)
-    return stages
-
-
-def sensor_dense_cfg(geom, *, modality='sensor', device=None, coherent=True,
-                     incoherent=False, digitize=True, n_bits=12, dense_key=None,
-                     **noise_kw):
-    """Optional sugar: the **config list** for the standard dense sensor chain
+def sensor_dense_cfg(geom, *, modality='sensor', device=None, base_seed=0,
+                     coherent=True, incoherent=False, digitize=True, n_bits=12,
+                     dense_key=None, **noise_kw):
+    """The standard dense sensor chain as plain ``dict(type=…)`` configs:
     ``[ToDevice?, BatchDensify, BatchAddIntrinsicNoise, BatchDigitize?]``.
 
-    Returns plain ``dict(type=…)`` configs so you can splat it into
-    :func:`build_batch_transforms` and add your own transforms around it::
+    Run it with the ordinary ``Compose`` (these are ``scope='sample'`` transforms —
+    there is **no batch-transform runner**): ``Compose([*sensor_dense_cfg(geom,
+    device='cuda'), my_user_gpu_fn])(batch)``. Noise self-seeds from ``batch['name']``
+    (``base_seed`` here; epoch/rank from optional ``batch['_epoch']``/``_rank``).
 
-        stages = build_batch_transforms([
-            *sensor_dense_cfg(geom, device='cuda'),
-            my_user_gpu_fn,
-        ])
-
-    Densify is **opt-in** and the sparse COO is **never** replaced — the dense grid
-    is an *added view* (``batch[modality]['dense']`` alongside ``wire/time/value``),
-    so a modality can be consumed sparse, dense, or both. Nothing here is sensor-
-    specific except the convenience name: ``BatchDensify`` densifies *any* sparse
-    modality. ``geom`` is a canonical-plane-id registry
-    (``JAXTPCDataset.plane_geometry()`` or ``load_plane_registry(json)``). Pass
-    ``device=`` to prepend a ``ToDevice`` stage (the device-as-transform path)
-    instead of the ``apply_batch_transforms(device=)`` argument. The output key is
-    the neutral, modality-agnostic ``'dense'`` (override via ``dense_key=``):
-    ``modality='sensor'`` -> ``batch['sensor']['dense']``; ``modality=None`` ->
-    ``batch['dense']``.
+    Densify is opt-in and additive (the sparse COO is never replaced). ``modality=
+    'sensor'`` writes flat ``sensor_dense``; ``modality=None`` writes bare ``dense``.
     """
     if dense_key is None:
         dense_key = 'dense'
@@ -318,8 +227,8 @@ def sensor_dense_cfg(geom, *, modality='sensor', device=None, coherent=True,
     cfg.append(dict(type='BatchDensify', geom=geom, modality=modality,
                     dense_key=dense_key))
     cfg.append(dict(type='BatchAddIntrinsicNoise', geom=geom, modality=modality,
-                    coherent=coherent, incoherent=incoherent, dense_key=dense_key,
-                    **noise_kw))
+                    base_seed=base_seed, coherent=coherent, incoherent=incoherent,
+                    dense_key=dense_key, **noise_kw))
     if digitize:
         cfg.append(dict(type='BatchDigitize', geom=geom, modality=modality,
                         n_bits=n_bits, dense_key=dense_key))
@@ -327,61 +236,34 @@ def sensor_dense_cfg(geom, *, modality='sensor', device=None, coherent=True,
 
 
 def build_sensor_gpu_stages(geom, *, modality=None, **kw):
-    """Back-compat thin wrapper: ``build_batch_transforms(sensor_dense_cfg(geom, …))``.
+    """Convenience: the dense sensor chain as a runnable ``Compose``.
 
-    Keeps the original ``modality=None`` (bare-batch) default — note
-    :func:`sensor_dense_cfg` itself defaults to the namespaced ``modality='sensor'``.
-    The output key is the neutral ``'dense'`` for both (``batch['dense']`` when bare,
-    ``batch[modality]['dense']`` when namespaced) — the old ``'sensor_dense'`` name is
-    gone. Prefer composing your own list with :func:`build_batch_transforms` +
-    :func:`sensor_dense_cfg`; this is kept so existing callers keep working.
+    ``stages = build_sensor_gpu_stages(geom, device='cuda'); batch = stages(batch)``.
+    There is no separate batch-transform runner — the dense ops are ordinary
+    ``scope='sample'`` transforms run by ``Compose`` (``ToDevice`` is the device step;
+    noise self-seeds). Default ``modality=None`` (bare-batch); pass ``modality=
+    'sensor'`` for flat ``sensor_*``.
     """
-    return build_batch_transforms(sensor_dense_cfg(geom, modality=modality, **kw))
-
-
-# ── runner ──────────────────────────────────────────────────────────────────
-def apply_batch_transforms(batch, stages, *, device=None, base_seed=0, epoch=0,
-                           rank=0, offset_key='offset'):
-    """Run ``stages`` (a list from :func:`build_batch_transforms`) on the batch.
-
-    Per-event seeds are derived from ``batch['name']`` + ``base_seed/epoch/rank`` and
-    passed to stages that declare ``seeds=``; a bare user callable ``fn(batch)`` is
-    called without it.
-
-    Device: the **preferred** way is a ``ToDevice`` transform as the first stage
-    (device-as-transform — uniform with the rest). The ``device=`` argument is a
-    back-compat convenience that prepends the move; if both are given the argument
-    moves first and a leading ``ToDevice`` is then a no-op. ``stages`` empty +
-    ``device`` set -> just the move.
-    """
-    if device is not None:
-        batch = move_to_device(batch, device)
-    if not stages:
-        return batch
-    seeds = _batch_seeds(batch, base_seed, epoch, rank, _batch_size(batch, offset_key))
-    for stage in stages:
-        # pimm-data stages take seeds=; a user's bare callable fn(batch) does not.
-        # Both are first-class on the post-collate side (see _accepts_seeds).
-        batch = stage(batch, seeds=seeds) if _accepts_seeds(stage) else stage(batch)
-    return batch
+    from .transform import Compose
+    return Compose(sensor_dense_cfg(geom, modality=modality, **kw))
 
 
 class BatchTransformMixin:
-    """Mixin for a LightningModule: run the stages in ``on_after_batch_transfer``.
+    """Mixin for a LightningModule: run the post-collate transforms in
+    ``on_after_batch_transfer``.
 
-    Set ``self.batch_stages`` (from :func:`build_sensor_gpu_stages`) and
-    ``self.base_seed``. Lightning calls this with the batch already on-device, so
-    ``device=None`` (no move). For a custom (non-Lightning) loop, call
-    :func:`apply_batch_transforms` inline after the ``.to(device)`` instead.
+    Set ``self.batch_stages`` to a ``Compose`` (e.g. from
+    :func:`build_sensor_gpu_stages`). Lightning calls this with the batch on-device;
+    we stamp ``_epoch``/``_rank`` so the self-seeding noise is per-epoch/rank, then
+    run the transforms. (For a custom loop, just call your ``Compose`` on the batch.)
     """
 
-    batch_stages: list = []
-    base_seed: int = 0
+    batch_stages = None
 
     def on_after_batch_transfer(self, batch, dataloader_idx=0):
+        if not self.batch_stages:
+            return batch
         trainer = getattr(self, 'trainer', None)
-        epoch = getattr(trainer, 'current_epoch', 0) or 0
-        rank = getattr(trainer, 'global_rank', 0) or 0
-        return apply_batch_transforms(
-            batch, self.batch_stages, device=None,
-            base_seed=self.base_seed, epoch=epoch, rank=rank)
+        batch['_epoch'] = getattr(trainer, 'current_epoch', 0) or 0
+        batch['_rank'] = getattr(trainer, 'global_rank', 0) or 0
+        return self.batch_stages(batch)

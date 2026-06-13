@@ -122,8 +122,7 @@ def test_dense_stage_scoped_to_namespaced_modality(jaxtpc_data_root):
     {plane_gid:(B,W,T)}, born on the runner's device (CPU here, device-agnostic);
     other modalities untouched. Seeds come from top-level batch['name']."""
     import torch
-    from pimm_data import (collate_fn, apply_batch_transforms,
-                           build_sensor_gpu_stages)
+    from pimm_data import collate_fn, build_sensor_gpu_stages
     wl = {'U': (0.42, 4.63), 'V': (0.42, 4.63), 'Y': (2.33, 2.33)}
     ds = JAXTPCDataset(
         data_root=jaxtpc_data_root, split='', dataset_name='sim',
@@ -138,9 +137,11 @@ def test_dense_stage_scoped_to_namespaced_modality(jaxtpc_data_root):
     batch = collate_fn([ds[0], ds[1]])
     step_coord = batch['step_coord'].clone()
 
-    stages = build_sensor_gpu_stages(geom, modality='sensor', coherent=True,
-                                     incoherent=False, digitize=True)
-    out = apply_batch_transforms(batch, stages, device='cpu', base_seed=0, epoch=0)
+    # build_sensor_gpu_stages returns a runnable Compose (ToDevice + dense ops);
+    # no separate runner. Noise self-seeds from batch['name'].
+    stages = build_sensor_gpu_stages(geom, modality='sensor', device='cpu',
+                                     coherent=True, incoherent=False, digitize=True)
+    out = stages(batch)
 
     grids = out['sensor_dense']                             # born at sensor_dense (flat)
     assert isinstance(grids, dict) and len(grids) >= 1

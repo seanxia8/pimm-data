@@ -102,51 +102,79 @@ class ApplyToModality(Apply):
 
 
 @TRANSFORMS.register_module()
-class Streams:
-    """Produce several named transform-VIEWS of the same event (the terminal transform).
+class MultiCrop:
+    """Produce packed multi-crop view PARTS from a source part (SSL multi-view).
 
-    A *stream* is the same event run through its own sub-pipeline to feed a distinct
-    model input — orthogonal to a *modality* (a physical channel from a reader):
-    modalities are different data that coexist; streams are the same data processed
-    differently. The canonical use is SSL (two augmented views → a contrastive loss);
-    also multi-scale or per-branch preprocessing.
+    Reads the source part ``on`` (a nested sub-dict with ``coord`` + ``view_keys``)
+    and writes two new parts (default ``global``/``local``), each **packing**
+    ``global_view_num``/``local_view_num`` center-sampled crops concatenated with an
+    ``offset`` separating them. ``global_shared_transform`` runs ONCE on the global
+    source (so all global crops share it); per-crop ``global_transform`` /
+    ``local_transform`` run on each crop with independent draws. Local crop centers
+    are sampled WITHIN the major global crop (co-location).
 
-        dict(type='Streams', streams={
-          'global': [dict(type='ApplyToModality', modality='step', transforms=[aug_heavy]),
-                     dict(type='Collect', modality='step', feat_keys=('coord','energy'))],
-          'local':  [dict(type='ApplyToModality', modality='step', transforms=[aug_light, crop]),
-                     dict(type='Collect', modality='step', feat_keys=('coord','energy'))],
-        })  # -> {'global': {coord,feat,offset}, 'local': {coord,feat,offset}, name, split}
+    Collect the resulting parts (``Collect(modalities={'global': dict(keys=('coord',
+    'offset'), offset_keys_dict={}, feat_keys=…), 'local': …})``) to flat
+    ``global_*``/``local_*``; collate's offset cumsum then packs ``B*num`` crops. The
+    per-crop ``offset`` is carried through (``offset_keys_dict={}`` suppresses the
+    derived one).
 
-    Each stream runs on a **fresh deep copy** of the event with **independent**
-    randomness (two *different* augmentations — contrast :class:`ApplyToModalities`,
-    which *shares* the draw to keep modalities aligned). Each stream's sub-pipeline
-    should end in :class:`Collect`; its output is namespaced under the stream name,
-    and ``collate_fn``'s Mapping recursion packs the nesting (no collate change). The
-    identity carriers ``name``/``split`` are kept once at the TOP level (seeding reads
-    ``batch['name']``), not duplicated inside each stream.
+    A focused port of pimm's ``MultiViewGenerator`` (anchor/cnms center sampling
+    omitted — uses uniform random centers).
     """
 
-    def __init__(self, streams):
-        if not streams:
-            raise ValueError("Streams: needs at least one named stream")
-        if {'name', 'split'} & set(streams):
-            raise ValueError("Streams: stream names 'name'/'split' are reserved")
-        self.streams = {name: Compose(t) for name, t in streams.items()}
+    def __init__(self, on='step', view_keys=('coord', 'energy'),
+                 global_view_num=2, global_view_scale=(0.4, 1.0),
+                 local_view_num=6, local_view_scale=(0.1, 0.4),
+                 global_shared_transform=None, global_transform=None,
+                 local_transform=None, global_name='global', local_name='local',
+                 max_size=65536):
+        assert 'coord' in view_keys, "MultiCrop: 'coord' must be in view_keys"
+        self.on = on
+        self.view_keys = tuple(view_keys)
+        self.gnum, self.gscale = int(global_view_num), tuple(global_view_scale)
+        self.lnum, self.lscale = int(local_view_num), tuple(local_view_scale)
+        self.gshared = Compose(global_shared_transform)
+        self.gtrans = Compose(global_transform)
+        self.ltrans = Compose(local_transform)
+        self.gname, self.lname = global_name, local_name
+        self.max_size = int(max_size)
+
+    def _get_view(self, src, center, scale):
+        coord = src['coord']
+        max_size = min(self.max_size, coord.shape[0])
+        size = max(1, min(max_size, int(np.random.uniform(*scale) * max_size)))
+        idx = np.argsort(np.sum((coord - center) ** 2, axis=-1))[:size]
+        return {k: src[k][idx] for k in self.view_keys if k in src}
+
+    def _pack(self, crops):
+        out = {}
+        for k in self.view_keys:
+            if all(k in c for c in crops):
+                out[k] = np.concatenate([c[k] for c in crops], axis=0)
+        out['offset'] = np.cumsum([c['coord'].shape[0] for c in crops]).astype('int64')
+        return out
 
     def __call__(self, data_dict):
-        out = {}
-        for name, pipe in self.streams.items():
-            # fresh copy per stream so independent sub-pipelines never alias arrays
-            res = pipe(copy.deepcopy(data_dict))
-            if isinstance(res, dict):
-                for idkey in ('name', 'split'):
-                    res.pop(idkey, None)        # keep identity at top level only
-            out[name] = res
-        for idkey in ('name', 'split'):
-            if idkey in data_dict:
-                out[idkey] = data_dict[idkey]
-        return out
+        src0 = data_dict[self.on]
+        # global source: shared transform applied ONCE, then crops sampled from it
+        gsrc = self.gshared(copy.deepcopy(src0))
+        gcoord = gsrc['coord']
+        major = self._get_view(gsrc, gcoord[np.random.randint(gcoord.shape[0])], self.gscale)
+        globals_ = [major]
+        for _ in range(self.gnum - 1):
+            c = major['coord'][np.random.randint(major['coord'].shape[0])]
+            globals_.append(self._get_view(gsrc, c, self.gscale))
+        data_dict[self.gname] = self._pack(
+            [self.gtrans(copy.deepcopy(v)) for v in globals_])
+        # local crops: centers within the major global crop (co-location)
+        locals_ = []
+        for _ in range(self.lnum):
+            c = major['coord'][np.random.randint(major['coord'].shape[0])]
+            locals_.append(self._get_view(src0, c, self.lscale))
+        data_dict[self.lname] = self._pack(
+            [self.ltrans(copy.deepcopy(v)) for v in locals_])
+        return data_dict
 
 
 @TRANSFORMS.register_module()

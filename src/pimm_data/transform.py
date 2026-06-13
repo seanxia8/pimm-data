@@ -237,11 +237,17 @@ class Collect(object):
                 [self._to_tensor(source[key]).float() for key in feat_keys], dim=1)
         return data
 
+    _OFFSET_DEFAULT = object()   # sentinel: distinguish "not given" from explicit {}
+
     @staticmethod
     def _parse_spec(spec):
         spec = dict(spec)
         keys = spec.pop('keys')
-        offset_keys = spec.pop('offset_keys_dict', None) or dict(offset="coord")
+        # explicit `offset_keys_dict={}` SUPPRESSES the derived offset (the part
+        # already carries its own, e.g. MultiCrop's per-crop packed offset); only a
+        # MISSING key falls back to the default. (Don't use `or` — {} is falsy.)
+        ok = spec.pop('offset_keys_dict', Collect._OFFSET_DEFAULT)
+        offset_keys = dict(offset="coord") if ok is Collect._OFFSET_DEFAULT else dict(ok)
         roles = dict(spec.pop('roles', {}))   # {key: role spec}, REDESIGN §3
         return keys, offset_keys, roles, spec  # remaining entries are <feat>_keys specs
 

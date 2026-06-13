@@ -44,7 +44,8 @@ def split_event(batch, i):
     """
     roles = _roles_of(batch)
     keys = [k for k in batch if k != '_roles']
-    parts = _roles.parts_from_keys(keys)
+    parts = _roles.parts_from_keys(keys, roles)
+    sub_offsets = _roles.subspace_offset_keys(keys, roles)
 
     # per-part [lo, hi) POINT span for event i (sliced by <part>_offset).
     span = {}
@@ -53,31 +54,30 @@ def split_event(batch, i):
         lo = int(off[i - 1]) if i > 0 else 0
         span[p] = (lo, int(off[i]))
 
-    # per-part [lo, hi) INSTANCE span for event i (sliced by <part>_inst_offset).
-    # A part with instances has a SECOND row-space (REDESIGN §3): instance-role
-    # keys (bbox, …) are K rows indexed by inst_offset, NOT by point count — they
-    # must slice by this span, never the point span.
-    inst_span = {}
-    for k in keys:
-        if k.endswith('_inst_offset'):
-            off = batch[k]
-            lo = int(off[i - 1]) if i > 0 else 0
-            inst_span[k[:-len('_inst_offset')]] = (lo, int(off[i]))
+    # per-second-row-space [lo, hi) span, keyed by the offset KEY. A part with a
+    # second row-space (REDESIGN §3) carries instance-role keys (bbox K rows;
+    # packed waveform samples) counted by their own offset, NOT by the point
+    # count — they must slice by this span, never the point span.
+    sub_span = {}
+    for k in sub_offsets:
+        off = batch[k]
+        lo = int(off[i - 1]) if i > 0 else 0
+        sub_span[k] = (lo, int(off[i]))
 
     out = {}
     for key in keys:
         spec = roles.get(key)
         kind = _roles.role_kind(spec) if spec is not None else None
-        if key.endswith('_inst_offset'):                    # check before _offset
-            lo, hi = inst_span.get(key[:-len('_inst_offset')], (0, 0))
-            out[key] = batch[key].new_tensor([hi - lo])     # single-event inst count (1,)
+        if key in sub_offsets:                              # 2nd-row-space offset
+            lo, hi = sub_span[key]
+            out[key] = batch[key].new_tensor([hi - lo])     # single-event count (1,)
             continue
-        if key.endswith('_offset'):
+        if key.endswith('_offset'):                         # part (point) offset
             lo, hi = span.get(key[:-len('_offset')], (0, 0))
             out[key] = batch[key].new_tensor([hi - lo])     # single-event offset (1,)
             continue
-        if kind == 'instance':                              # slice by the INSTANCE span
-            lo, hi = inst_span.get(_roles.part_of(key, parts), (0, 0))
+        if kind == 'instance':                              # slice by its own row-space
+            lo, hi = sub_span.get(spec[1], (0, 0))
             out[key] = batch[key][lo:hi]
             continue
         if kind == 'edge':

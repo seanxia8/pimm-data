@@ -13,6 +13,7 @@ from .lucid_step import LUCiDStepReader
 from .lucid_sensor import LUCiDSensorReader
 from .lucid_hits import LUCiDHitsReader
 from .lucid_labl import LUCiDLablReader
+from .optical_sensor import OpticalSensorReader
 
 __all__ = [
     "JAXTPCStepReader",
@@ -23,4 +24,5 @@ __all__ = [
     "LUCiDSensorReader",
     "LUCiDHitsReader",
     "LUCiDLablReader",
+    "OpticalSensorReader",
 ]

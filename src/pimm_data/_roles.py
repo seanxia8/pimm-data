@@ -17,7 +17,7 @@ spec                meaning / collate behaviour
 ``'event'``         NOT per-point (whole-event scalar / part summary / dense grid) — **stack** ``(B,…)`` / list
 ``('edge','self')`` index into its own part — concat + shift by the part's running node count
 ``('edge',(s,d))``  bipartite cross-store — row 0 shifts by ``s``'s node count, row 1 by ``d``'s
-``('instance',ok)`` one row per instance — concat by ``<part>_offset`` named ``ok`` (an ``*_inst_offset`` key)
+``('instance',ok)`` rows in a SECOND row-space — concat; counted by the role-declared offset key ``ok``
 ``('label',grp)``   categorical id — compact per event to ``0..K-1`` then add running distinct-count base, joint over ``grp``
 ==================  =========================================================
 
@@ -25,13 +25,16 @@ This module is import-light (torch only) and has no pimm-data dependencies, so i
 be reused by collate and by the post-collate helpers.
 
 **Two row-spaces per part.** A part normally has ONE row-space — points, counted by
-``<part>_offset``. A part that carries instances has a SECOND, independent row-space —
-instances, counted by ``<part>_inst_offset`` (cumulative, ``(B,)``, NO leading 0, same
-convention as ``offset``). ``instance``-role keys (``bbox``, per-instance attrs) live in
-this second space: they are ``K`` rows, NOT ``N`` rows, so collate concatenates them and
-:func:`split_event` slices them by ``inst_offset`` — never by the point ``offset``. The
-per-point ``instance`` *index* column is a different thing: it is ``point``-role (one row
-per point) and names which instance each point belongs to.
+``<part>_offset``. A part may carry a SECOND, independent row-space counted by its own
+offset key (cumulative, ``(B,)``, NO leading 0, same convention as ``offset``). The
+``('instance', ok)`` role declares its rows live in that second space, naming the offset
+key ``ok`` — read from the role spec, NOT hard-wired to a suffix (see
+:func:`subspace_offset_keys`). The second space can be COARSER than points (instance
+``bbox`` (K,…), ``ok='<part>_inst_offset'``) or FINER (packed waveform samples per chunk,
+``ok='<part>_wave_offset'`` — the optical loader). Either way collate concatenates these
+keys and :func:`split_event` slices them by ``ok``'s span — never by the point ``offset``.
+The per-point ``instance`` *index* column is a different thing: it is ``point``-role (one
+row per point) and names which instance each point belongs to.
 
 **Per-event-local instance ids, global is a collate output.** A producer emits per-event
 instance indices compacted to ``0..K-1`` (so per-point ``instance`` indexes that event's
@@ -90,21 +93,35 @@ def role_kind(spec):
     raise ValueError(f"unknown role spec: {spec!r}")
 
 
-def parts_from_keys(keys):
-    """The set of part names present = prefixes ``P`` such that ``P_offset`` is a key.
+def is_instance_spec(spec):
+    """True if ``spec`` is an ``('instance', offset_key)`` role spec."""
+    return (isinstance(spec, (tuple, list)) and len(spec) >= 2
+            and spec[0] == 'instance')
 
-    ``*_inst_offset`` keys name an instance sub-offset of part ``P`` (``P_inst``),
-    not a separate part — exclude them from the part set.
+
+def subspace_offset_keys(keys, roles=None):
+    """Offset keys that index a part's SECOND row-space, not a part.
+
+    An ``('instance', ok)`` role declares its rows live in the row-space counted
+    by offset key ``ok`` (e.g. ``bbox`` in ``step_inst_offset``, packed waveform
+    samples in ``sensor_wave_offset``). The offset name is role-declared — read
+    it from the specs. The ``*_inst_offset`` suffix is kept as a no-``roles``
+    fallback (the conventional name for the bbox instance case).
     """
-    suf = '_offset'
-    out = set()
-    for k in keys:
-        if k.endswith(suf):
-            p = k[:-len(suf)]
-            if p.endswith('_inst'):
-                continue
-            out.add(p)
+    out = {spec[1] for spec in (roles or {}).values() if is_instance_spec(spec)}
+    out.update(k for k in keys if k.endswith('_inst_offset'))
     return out
+
+
+def parts_from_keys(keys, roles=None):
+    """The set of part names present = prefixes ``P`` such that ``P_offset`` is a
+    key, EXCLUDING second-row-space offsets (instance offsets — see
+    :func:`subspace_offset_keys`), which belong to a part, not name one.
+    """
+    sub = subspace_offset_keys(keys, roles)
+    suf = '_offset'
+    return {k[:-len(suf)] for k in keys
+            if k.endswith(suf) and k not in sub}
 
 
 def part_of(key, parts):

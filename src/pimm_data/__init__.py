@@ -24,6 +24,7 @@ from .collate import collate_fn, point_collate_fn, inseg_collate_fn
 # Dataset classes (register themselves)
 from .jaxtpc import JAXTPCDataset
 from .lucid import LUCiDDataset
+from .optical import OpticalDataset
 from .pilarnet import PILArNetH5Dataset
 from .multimodal import MultiModalEventDataset
 
@@ -39,6 +40,7 @@ from . import detector_transforms  # noqa: F401
 from .readers import (
     JAXTPCStepReader, JAXTPCSensorReader, JAXTPCHitsReader, JAXTPCLablReader,
     LUCiDStepReader, LUCiDSensorReader, LUCiDHitsReader, LUCiDLablReader,
+    OpticalSensorReader,
 )
 from ._joint_index import build_joint_index
 
@@ -71,6 +73,7 @@ __all__ = [
     "inseg_collate_fn",
     "JAXTPCDataset",
     "LUCiDDataset",
+    "OpticalDataset",
     "PILArNetH5Dataset",
     "MultiModalEventDataset",
     # readers + joint index (torch-free public surface)
@@ -82,6 +85,7 @@ __all__ = [
     "LUCiDSensorReader",
     "LUCiDHitsReader",
     "LUCiDLablReader",
+    "OpticalSensorReader",
     "build_joint_index",
     # post-collate dense transforms (run via Compose; no batch-transform runner)
     "sensor_dense_cfg",

@@ -27,7 +27,7 @@ def collate_with_roles(samples):
     """
     roles = samples[0].get('_roles', {})
     keys = [k for k in samples[0] if k != '_roles']
-    parts = _roles.parts_from_keys(keys)
+    parts = _roles.parts_from_keys(keys, roles)
     col = lambda key: [s[key] for s in samples]
     offs = lambda part: [s[f'{part}_offset'] for s in samples]
     out = {}

@@ -18,7 +18,8 @@ synthesizer.
 import os
 import pytest
 
-from pimm_data.testing import make_jaxtpc_sample, make_lucid_sample
+from pimm_data.testing import (make_jaxtpc_sample, make_lucid_sample,
+                               make_optical_sample)
 
 _REQUIRED_SUBDIRS = ('step', 'sensor', 'hits', 'labl')
 
@@ -98,6 +99,23 @@ def lucid_data_root(tmp_path_factory):
     path, _ = _resolve_root('LUCID_DATA_ROOT', tmp_path_factory,
                             make_lucid_sample, 'lucid_synth')
     return path
+
+
+@pytest.fixture(scope='session')
+def optical_data_root(tmp_path_factory):
+    """Optical (PMT light) dataset — ``label_N`` chunk schema.
+
+    Prefers ``OPTICAL_DATA_ROOT`` when set (must contain a ``sensor/`` subdir);
+    otherwise falls back to a synthetic fixture.
+    """
+    override = os.environ.get('OPTICAL_DATA_ROOT')
+    if override:
+        if not os.path.isdir(os.path.join(override, 'sensor')):
+            pytest.skip(f"OPTICAL_DATA_ROOT={override} has no sensor/ subdir")
+        return override
+    root = str(tmp_path_factory.mktemp('optical_synth'))
+    make_optical_sample(root, dataset_name='optical', n_events=3, n_files=2)
+    return root
 
 
 @pytest.fixture(scope='session')

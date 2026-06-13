@@ -33,13 +33,16 @@ readers/ (HDF5 → flat dict)  →  jaxtpc.py / lucid.py (flat → nested)  → 
    per `(detector, modality)` pair. Each opens a glob of shard files,
    builds an event index, and exposes `read_event(idx) → flat dict`. They
    share no base class but follow the same protocol.
-2. **Datasets** (`jaxtpc.py`, `lucid.py`, `pilarnet.py`) — subclass
-   `DefaultDataset` (in `defaults.py`, vendored from Pointcept). They wire
-   together per-modality readers, join `labl` dimension tables onto
+2. **Datasets** (`jaxtpc.py`, `lucid.py`, `optical.py`, `pilarnet.py`) —
+   subclass `DefaultDataset` (in `defaults.py`, vendored from Pointcept). They
+   wire together per-modality readers, join `labl` dimension tables onto
    `step`/`hits` point clouds, and emit a **nested** dict keyed by modality
    (`{'step': {...}, 'hits': {...}, 'labl': {...}, 'bridges': {...}}`).
    `get_data(idx)` returns raw numpy; `__getitem__` runs the transform
-   pipeline.
+   pipeline. `OpticalDataset` is single-modality (`sensor`) PMT light: each
+   `sensor` row is a per-interaction waveform **chunk**; the raw samples are a
+   packed **second row-space** (`adc`, role `('instance','sensor_wave_offset')`)
+   — see "Optical" below.
 3. **Transforms** (`transform.py`, `detector_transforms.py`) — Pointcept-
    style registry of point-cloud augmentations. The pipeline ends with
    `Collect`, which scopes to one modality and converts numpy → torch.
@@ -106,6 +109,19 @@ JAXTPC also returns a top-level `bridges` sub-dict containing
   dense class indices.
 - **LUCiD** requires `format_version >= 3` shards. `instance` is
   `particle_idx`; `segment` is `labl.particle.category`.
+- **Optical** (`optical.py`, `readers/optical_sensor.py`) reads the doraemon
+  PMT-light `sensor/` shards (`event_NNN/label_K/{adc,offsets,pmt_id,t0_ns,
+  pe_counts}`; `label_K` = one interaction). Each chunk is a long dense
+  waveform (~36k samples; 20–50M samples/event) — per-sample point clouds are
+  infeasible, so the loader emits **chunks** as the `sensor` row-space
+  (`coord=[pmt_id,t0_tick]`, `pe`, `instance`=interaction, `length`) and packs
+  the raw samples losslessly as the **second row-space** `adc` (ΣL,) tagged
+  `('instance','sensor_wave_offset')`. Canonical `Collect` declares the second
+  offset: `offset_keys_dict=dict(offset='coord', wave_offset='adc')`. TPC truth
+  (`tpc_*`) is left on disk. Real data:
+  `/sdf/data/neutrino/doraemon/optical_test_00_00_02` (`dataset_name=
+  test_00_00_02_pixel`). The second-row-space machinery (`_roles`,
+  `collate`, `batch_ops.split_event`) is role-declared, not `_inst`-suffixed.
 
 ### Tests
 

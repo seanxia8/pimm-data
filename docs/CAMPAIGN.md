@@ -35,7 +35,7 @@ Every challenge is `Dataset(modalities=…, labels=…) → transforms → Colle
 
 | Challenge | modalities | labels | key transforms | Collect | config | status |
 |---|---|---|---|---|---|---|
-| 3D semantic seg (5-class motif) | `('step',)` | `'pdg'` | `RemapSegment(motif_5cls)`, `GridSample`, `RandomRotate/Flip` | `step`: coord/segment, feat=coord+energy | `configs/detector/semseg/semseg-pt-v3m2-jaxtpc-5cls.py` | exists |
+| 3D semantic seg (5-class motif) | `('step',)` | `'pdg'` | `RemapSegment(motif_5cls)`, `GridSample`, `RandomRotate/Flip` | `step`: coord/grid_coord/segment, feat=coord+energy | **recipe** `configs/jaxtpc/semseg_5cls.py` (pimm training cfg: `…/semseg-pt-v3m2-jaxtpc-5cls.py`) | recipe ✓ |
 | 3D instance seg | `('step',)` | `'cluster'` or `'ancestor'` | `GridSample` | `step`: coord/segment/instance | — | planned |
 | 3D self-supervised (SSL) | `('step',)` | — | `MultiCrop` (global/local) | `step`: coord, feat | — | planned |
 | Interaction classification/grouping | `('step',)` | `'interaction'` | `GridSample` | `step`: coord/segment | — | planned |
@@ -55,7 +55,7 @@ Direct from `LUCID_DATASET.md` §"Tasks → files" (`inst→hits`, `seg→step`)
 | Per-segment Cherenkov forward sim | `('step',)` | — | `step`: coord + physics (beta/n_cherenkov) | — | planned |
 | sensor → inst denoising/deconv | `('sensor','hits')` | — | `sensor` in, `hits` target | — | planned |
 | sensor → seg recon (vertex/energy/dir) | `('sensor','step')` | — | `sensor` in, `step` target | — | planned |
-| Per-PMT semantic/instance seg | `('hits',)` | `True` | `hits`: coord/segment/instance | — | planned |
+| Per-PMT semantic/instance seg | `('hits',)` | `True` | `hits`: coord/grid_coord/segment/instance, feat=coord+energy+time | **recipe** `configs/lucid/perpmt_seg_hits.py` | recipe ✓ |
 | 3D semantic/instance seg on segments | `('step',)` | `True` | `step`: coord/segment/instance | — | planned |
 | Event class/regression (E, dir, vertex) | `('sensor','hits')` | `True` | event-level target + `sensor`/`hits` | — | planned |
 | Containment-filtered training | (any) | `True` | + `min_segments`/containment filter | — | planned |
@@ -69,7 +69,7 @@ docs.)
 
 | Challenge | schema | modalities | per-chunk target | Collect | status |
 |---|---|---|---|---|---|
-| Interaction/operator discrimination | `label` | `('sensor',)` | `instance` (interaction) | `sensor`: pmt_id/t0_ns/length/adc + instance | planned |
+| Interaction/operator discrimination | `label` | `('sensor',)` | `instance` (interaction) | `sensor`: pmt_id/t0_ns/length/pe/instance/adc | recipe ✓ `configs/optical/interaction_discrimination.py` |
 | Per-channel PE regression | `label` | `('sensor',)` | `pe` | `sensor`: … + pe target | planned |
 | Waveform SSL / pretraining | `label`/`east_west` | `('sensor',)` | — | `sensor`: adc (+ wave_offset) | planned |
 | Waveform denoising / compression | `east_west` | `('sensor',)` | clean/coeffs | `sensor`: adc | planned |
@@ -79,12 +79,37 @@ docs.)
 
 ## Building the configs
 
-Each `planned` row → one config under `particle-imaging-models/configs/`,
-following the existing naming (`<task>-<backbone>-<dataset>-<variant>.py`) and
-reusing the `_base_` dataset/transform fragments. The data-layer half of each
-config (the `Dataset(...)` + `transform=[…]` block) is fully specified by this
-table; the model/optimizer half follows the matching existing config (e.g.
-`semseg-pt-v3m2-jaxtpc-5cls.py` for JAXTPC seg, the sonata pretrain for SSL).
+These configs are **data-loader specs** — the point is to set up each
+challenge's data loading *exactly*, not the model. So the campaign is built in
+two layers:
+
+1. **Recipe (pimm-data `configs/<dataset>/<challenge>.py`)** — the data-loading
+   half only, in the new flat-prefixed API (`Apply(on=)` + `Collect(modalities=)`).
+   It lives here because the new API + `OpticalDataset` exist only in pimm-data
+   (not yet in pimm's pinned submodule), so a recipe is **verifiable now**:
+   `tests/test_campaign_configs.py` execs each recipe against the synthetic
+   fixtures and asserts the challenge's flat keys. `status = recipe ✓`.
+2. **Training config (`particle-imaging-models/configs/`)** — lifts a recipe's
+   `data`/`transform` block and adds the model/optimizer/hooks half, following
+   the existing naming (`<task>-<backbone>-<dataset>-<variant>.py`). Needs pimm's
+   `libs/pimm-data` submodule bumped to the redesign SHA first.
+
+Built so far (representative-first, one per dataset): JAXTPC semseg, LUCiD
+per-PMT seg on hits, Optical interaction discrimination — all `recipe ✓`.
+
+### Findings / follow-ups
+
+- **LUCiD raw-sensor SSL** is not new-API-clean yet: `AggregateSensorHits` writes
+  the aggregated point cloud to the **top level** and drops the sub-dict (legacy
+  flatten), but the new `MultiCrop(on='sensor')` + `Collect(modalities=)` flow
+  needs it kept **nested** in the `sensor` sub-dict. Add a nested write-back mode
+  to `AggregateSensorHits` before building the SSL recipes (`MultiViewGenerator`
+  → `MultiCrop` is otherwise a direct swap).
+- **`coord` comes out float64** after `NormalizeCoord` (python-float scale). Cast
+  to float32 in the recipe if the target model is strict (feat is already
+  float32 via `feat_keys`).
+- **Optical needs a waveform/sequence model** (PT-v3 is point-cloud only); the
+  optical recipes are data-half + placeholder model until one exists.
 
 Update the `config`/`status` cell as each is built so this stays the campaign's
 source of truth.

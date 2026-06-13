@@ -171,26 +171,25 @@ class BatchDensify:
         self.plane_key, self.offset_key, self.dense_key = plane_key, offset_key, dense_key
 
     def __call__(self, batch, *, seeds=None):
-        # modality=None → operate on the bare batch (back-compat); modality='X'
-        # → scope to the namespaced batch['X'] sub-dict (multi-modality path).
-        tgt = batch[self.modality] if self.modality is not None else batch
-        # Clear, modality-named signal for the #1 dense coupling: a coord-mutating
-        # transform (GridSample/SphereCrop/RandomDropout) on this modality
-        # pre-collate desyncs the raw COO from `offset`. Catch it here — before the
-        # generic dense_ops guard — naming the modality and the fix.
+        # REDESIGN: flat-prefixed keys. modality=None → bare keys (`wire`, `dense`);
+        # modality='sensor' → flat `sensor_wire` … `sensor_dense`.
+        pfx = f'{self.modality}_' if self.modality is not None else ''
         m = self.modality if self.modality is not None else '<bare batch>'
-        n = tgt[self.wire_key].reshape(-1).shape[0]
-        off = tgt[self.offset_key]
+        wire = batch[pfx + self.wire_key]
+        off = batch[pfx + self.offset_key]
+        n = wire.reshape(-1).shape[0]
+        # Clear signal for the #1 dense coupling: a coord-mutating transform on this
+        # part pre-collate desyncs the raw COO from offset.
         if off.numel() and int(off[-1]) != n:
             raise ValueError(
                 f"BatchDensify({m!r}): offset total {int(off[-1])} != {n} raw-COO "
-                f"rows ({self.wire_key!r}). A coord-mutating transform "
-                "(GridSample/SphereCrop/RandomDropout) ran on this modality "
-                "pre-collate — densify needs the raw COO aligned with offset. "
-                "Voxelize a SEPARATE sparse view, not the one you densify.")
-        tgt[self.dense_key] = dense_ops.densify(
-            tgt[self.wire_key], tgt[self.time_key], tgt[self.value_key],
-            tgt[self.plane_key], tgt[self.offset_key], self.geom)
+                f"rows ({pfx + self.wire_key!r}). A coord-mutating transform "
+                "(GridSample/SphereCrop/RandomDropout) ran on this part pre-collate "
+                "— densify needs the raw COO aligned with offset. Voxelize a SEPARATE "
+                "sparse view, not the one you densify.")
+        batch[pfx + self.dense_key] = dense_ops.densify(
+            wire, batch[pfx + self.time_key], batch[pfx + self.value_key],
+            batch[pfx + self.plane_key], off, self.geom)
         return batch
 
 
@@ -218,9 +217,9 @@ class BatchAddIntrinsicNoise:
                        series_spectrum=series_spectrum)
 
     def __call__(self, batch, *, seeds):
-        tgt = batch[self.modality] if self.modality is not None else batch
+        pfx = f'{self.modality}_' if self.modality is not None else ''
         dense_ops.add_intrinsic_noise(
-            tgt[self.dense_key], self.geom, seeds=seeds, enc=self.enc,
+            batch[pfx + self.dense_key], self.geom, seeds=seeds, enc=self.enc,
             coherent=self.coherent, incoherent=self.incoherent, **self.kw)
         return batch
 
@@ -240,12 +239,12 @@ class BatchDigitize:
         self.dense_key = dense_key
 
     def __call__(self, batch, *, seeds=None):
-        tgt = batch[self.modality] if self.modality is not None else batch
+        pfx = f'{self.modality}_' if self.modality is not None else ''
         ped = self.pedestal
         if ped is None:
             ped = {gid: e.get('pedestal', 0) for gid, e in self.geom.items()}
-        tgt[self.dense_key] = dense_ops.digitize(
-            tgt[self.dense_key], ped, n_bits=self.n_bits,
+        batch[pfx + self.dense_key] = dense_ops.digitize(
+            batch[pfx + self.dense_key], ped, n_bits=self.n_bits,
             adc_max=self.adc_max, gain=self.gain)
         return batch
 

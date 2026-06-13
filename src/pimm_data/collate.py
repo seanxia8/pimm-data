@@ -57,8 +57,9 @@ def collate_with_roles(samples):
                 out[key] = _roles.stack_event(col(key))
         else:
             raise ValueError(f"collate: unhandled role {spec!r} for {key!r}")
-    if roles:
-        out['_roles'] = roles
+    # always carry _roles when the roles path ran (even if empty) so post-collate
+    # consumers (split_event, the tail-runner) can rely on its presence.
+    out['_roles'] = roles
     return out
 
 

@@ -136,14 +136,20 @@ def test_densify_default_key_is_neutral_dense():
     assert out['dense'][0].shape == (2, 4, 5)
 
 
-def test_densify_namespaced_default_lands_in_modality_dense():
-    """modality='sensor' with NO dense_key= now lands at batch['sensor']['dense']
-    (the de-footgunned default), not batch['sensor']['sensor_dense']."""
+def _flat_sensor_batch(**override):
+    b = _tiny_sensor_batch()
+    b.update(override)
+    return {f'sensor_{k}': v for k, v in b.items() if k != 'name'}
+
+
+def test_densify_namespaced_default_lands_in_flat_dense():
+    """REDESIGN: modality='sensor' reads FLAT sensor_* keys and writes sensor_dense
+    (flat-prefixed), not a nested batch['sensor']['dense']."""
     from pimm_data.batch_transforms import BatchDensify
     geom = {0: {'n_wires': 4, 'n_ticks': 5}}
-    batch = {'sensor': _tiny_sensor_batch()}
-    out = BatchDensify(geom, modality='sensor')(batch)      # no dense_key=
-    assert 'dense' in out['sensor'] and 'sensor_dense' not in out['sensor']
+    out = BatchDensify(geom, modality='sensor')(_flat_sensor_batch())   # no dense_key=
+    assert 'sensor_dense' in out and out['sensor_dense'][0].shape == (2, 4, 5)
+    assert 'dense' not in out                               # not bare
 
 
 def test_densify_coord_mutation_coupling_is_loud():
@@ -152,7 +158,6 @@ def test_densify_coord_mutation_coupling_is_loud():
     generic dense_ops guard."""
     from pimm_data.batch_transforms import BatchDensify
     geom = {0: {'n_wires': 4, 'n_ticks': 5}}
-    sub = _tiny_sensor_batch()
-    sub['offset'] = torch.tensor([1, 2])           # total 2 != 3 COO rows (subsampled)
+    batch = _flat_sensor_batch(offset=torch.tensor([1, 2]))   # total 2 != 3 COO rows
     with pytest.raises(ValueError, match=r"BatchDensify\('sensor'\).*coord-mutating"):
-        BatchDensify(geom, modality='sensor')({'sensor': sub})
+        BatchDensify(geom, modality='sensor')(batch)

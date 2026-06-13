@@ -68,8 +68,8 @@ def test_lucid_labels_param_matches_legacy(lucid_data_root):
 # --- Phase 2: namespaced multi-modality Collect ---------------------------
 
 def test_namespaced_multimodality_collect(jaxtpc_data_root):
-    """Collect(modalities={...}) -> {step:{...}, sensor:{...}, name, split} with
-    each modality self-contained, its OWN offset, and junk (raw/coord) dropped."""
+    """REDESIGN: Collect(modalities={...}) -> FLAT underscore-prefixed keys
+    (step_coord, sensor_wire, …) + _roles, each part its OWN offset, junk dropped."""
     from pimm_data import collate_fn
     ds = JAXTPCDataset(
         data_root=jaxtpc_data_root, split='', dataset_name='sim',
@@ -80,16 +80,15 @@ def test_namespaced_multimodality_collect(jaxtpc_data_root):
         })])
     batch = collate_fn([ds[0], ds[1]])
 
-    assert set(batch) == {'step', 'sensor', 'name', 'split'}          # namespaced
-    assert set(batch['step']) >= {'coord', 'segment', 'feat', 'offset'}
-    assert set(batch['sensor']) == {'wire', 'time', 'value', 'plane_gid', 'offset'}
-    assert 'raw' not in batch['sensor'] and 'coord' not in batch['sensor']  # junk gone
-    # each modality has its OWN cumulative offset (B,), matching its row count
-    assert batch['step']['offset'].shape == (2,)
-    assert batch['sensor']['offset'].shape == (2,)
-    assert int(batch['step']['offset'][-1]) == batch['step']['coord'].shape[0]
-    assert int(batch['sensor']['offset'][-1]) == batch['sensor']['wire'].shape[0]
-    assert batch['step']['coord'].shape[1] == 3 and batch['sensor']['wire'].ndim == 1
+    assert {'step_coord', 'step_segment', 'step_feat', 'step_offset',
+            'sensor_wire', 'sensor_time', 'sensor_value', 'sensor_plane_gid',
+            'sensor_offset', 'name', 'split', '_roles'} <= set(batch)
+    assert 'sensor_coord' not in batch and 'sensor_raw' not in batch   # junk gone
+    # each part has its OWN cumulative offset (B,), no leading 0
+    assert batch['step_offset'].shape == (2,) and batch['sensor_offset'].shape == (2,)
+    assert int(batch['step_offset'][-1]) == batch['step_coord'].shape[0]
+    assert int(batch['sensor_offset'][-1]) == batch['sensor_wire'].shape[0]
+    assert batch['step_coord'].shape[1] == 3 and batch['sensor_wire'].ndim == 1
 
 
 def test_collect_rejects_both_forms():
@@ -111,9 +110,9 @@ def test_sensor_consumed_sparse_no_densify(jaxtpc_data_root):
             'sensor': dict(keys=('coord',), feat_keys=('coord', 'energy')),
         })])
     batch = collate_fn([ds[0], ds[1]])
-    assert batch['sensor']['coord'].shape[1] == 2          # 2D wire×time point cloud
-    assert 'feat' in batch['sensor'] and 'offset' in batch['sensor']
-    assert 'dense' not in batch['sensor']                  # nothing forced dense
+    assert batch['sensor_coord'].shape[1] == 2             # 2D wire×time point cloud
+    assert 'sensor_feat' in batch and 'sensor_offset' in batch
+    assert 'sensor_dense' not in batch                     # nothing forced dense
 
 
 # --- Phase 3: optional densify scoped to a namespaced modality ------------
@@ -137,17 +136,17 @@ def test_dense_stage_scoped_to_namespaced_modality(jaxtpc_data_root):
     ds.get_data(0)                       # populate reader geometry
     geom = ds.plane_geometry()
     batch = collate_fn([ds[0], ds[1]])
-    step_coord = batch['step']['coord'].clone()
+    step_coord = batch['step_coord'].clone()
 
     stages = build_sensor_gpu_stages(geom, modality='sensor', coherent=True,
                                      incoherent=False, digitize=True)
     out = apply_batch_transforms(batch, stages, device='cpu', base_seed=0, epoch=0)
 
-    grids = out['sensor']['dense']                          # born under sensor
+    grids = out['sensor_dense']                             # born at sensor_dense (flat)
     assert isinstance(grids, dict) and len(grids) >= 1
     for g in grids.values():
         assert g.ndim == 3 and g.shape[0] == 2              # (B, W, T)
-    assert 'dense' not in out['step'] and torch.equal(out['step']['coord'], step_coord)
+    assert 'step_dense' not in out and torch.equal(out['step_coord'], step_coord)
 
 
 # --- Phase 5: codec transcode must preserve the holdout identity (F1) -----

@@ -242,19 +242,30 @@ class Collect(object):
         spec = dict(spec)
         keys = spec.pop('keys')
         offset_keys = spec.pop('offset_keys_dict', None) or dict(offset="coord")
-        return keys, offset_keys, spec  # remaining entries are <feat>_keys specs
+        roles = dict(spec.pop('roles', {}))   # {key: role spec}, REDESIGN §3
+        return keys, offset_keys, roles, spec  # remaining entries are <feat>_keys specs
 
     def __call__(self, data_dict):
         if self.modalities_spec is not None:
+            # REDESIGN: namespaced form emits FLAT underscore-prefixed keys
+            # (`step_coord`, `step_offset`, `step_feat`) + a `_roles` map, NOT a
+            # nested `{step:{…}}` dict. collate routes flat+_roles to the role-driven
+            # reduce. Single-modality form (below) stays bare/byte-identical.
             out = dict()
+            roles = dict()
             for mname, spec in self.modalities_spec.items():
                 if not isinstance(data_dict.get(mname), dict):
                     avail = [k for k in data_dict if isinstance(data_dict.get(k), dict)]
                     raise KeyError(
                         f"Collect(modalities=): modality {mname!r} absent or not a "
                         f"sub-dict; available: {avail}")
-                keys, offset_keys, feat_specs = self._parse_spec(spec)
-                out[mname] = self._project(data_dict[mname], keys, offset_keys, feat_specs)
+                keys, offset_keys, part_roles, feat_specs = self._parse_spec(spec)
+                projected = self._project(data_dict[mname], keys, offset_keys, feat_specs)
+                for k, v in projected.items():
+                    out[f'{mname}_{k}'] = v
+                for k, r in part_roles.items():       # prefix declared roles
+                    roles[f'{mname}_{k}'] = r
+            out['_roles'] = roles                     # always present -> flat-roles collate
         else:
             source = data_dict[self.modality] if self.modality is not None else data_dict
             out = self._project(source, self.keys, self.offset_keys, self.kwargs)

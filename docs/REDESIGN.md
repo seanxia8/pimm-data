@@ -16,8 +16,7 @@ Every transform has **one format** — it declares the part(s) it operates on vi
 `edge` / `label` / `event`). `collate` is role-driven and is the only thing that
 "knows about" batching. There is **no separate batch-transform concept**:
 GPU/dense ops (densify/noise/digitize) are ordinary `scope='sample'` transforms
-placed after a `ToDevice` step; an internal *tail-runner* executes the post-collate
-segment per batch. Views, graphs, fusion, tokenization are all just transforms or
+placed after a `ToDevice` step and run by the ordinary `Compose` (no runner). Views, graphs, fusion, tokenization are all just transforms or
 producers over this contract.
 
 ---
@@ -38,8 +37,8 @@ producers over this contract.
   opens this segment. Densify/noise/digitize live here (by cost, see §7).
 
 The framework **splits the one list at `Collect`**: head → `Dataset.__getitem__`,
-reduce → `collate_fn`, tail → an internal **tail-runner** invoked by the trainer
-(`on_after_batch_transfer` for Lightning, or a one-line loop).
+reduce → `collate_fn`, tail → the ordinary `Compose` run by the trainer
+(`on_after_batch_transfer` for Lightning, or a one-line loop). There is NO runner.
 
 **Two hard fences (the only placement constraints):**
 1. **No CUDA before the reduce** — workers are forked; per-event transforms cannot
@@ -160,7 +159,7 @@ property.
 
 **`_roles` SURVIVES collate** — carried on the batch (e.g. `batch['_roles']`), NOT
 dropped — because `batch[i]`/`split_event` (rebasing edges, slicing instances) and
-the post-collate tail-runner (`on=`-targeted densify) need to know each key's role
+the post-collate dense transforms (`on=`-targeted) need to know each key's role
 *after* the reduce. Other `_`-prefixed temporaries are dropped.
 
 **Typed internally, bare at the boundary:** collate builds lightweight typed parts
@@ -181,7 +180,8 @@ file-descriptor sharing, not pickling.
   offset-only path; this lives in one place, not every model.
 - **`batch[i]` / `split_event(batch, i)`** — one event, with all index columns
   **rebased** to that event. Hand-rolled index-rebasing is the #1 bug source; ship it.
-- **`content_seed(name, …)`** + the tail-runner supply per-event seeds for noise.
+- **`content_seed(name, …)`** — `BatchAddIntrinsicNoise` SELF-seeds per event from
+  `batch['name']` (no runner injects seeds).
 
 ---
 
@@ -198,9 +198,9 @@ transform. Placement is a **cost choice**:
 | pre-`Collect` (per-event, workers) | ships dense over IPC; collate **stacks** the per-event grids (`event` role) |
 
 `ToDevice(device=…)` is an ordinary transform — the explicit `.to(device)` step that
-opens the per-batch segment. The internal **tail-runner** (formerly
-`apply_batch_transforms`) executes the post-`Collect` segment per batch and supplies
-seeds. There is no `Batch*` class and no `build_batch_transforms` surface.
+opens the per-batch segment, which the ordinary `Compose` runs (dense ops are
+`scope='sample'`, self-seeding). There is NO `apply_batch_transforms`/`build_batch_transforms`
+runner surface — `build_sensor_gpu_stages` just returns a `Compose`.
 
 The only thing that would ever need a true batch transform is a genuinely
 cross-sample op (mixup, batch statistics, cross-event edges) — `scope='batch'`,
@@ -352,8 +352,8 @@ From the pimm + SPINE author reviews of an earlier draft:
   offset, and **single-cloud (C1/C2) byte-identity holds** (PF1 golden unchanged) —
   the earlier `(B+1)` idea is dropped (it would have broken every consumer silently).
 - **`Streams` deleted; `ApplyToModalities` folded into `Apply(on=)` (multi-part = implicitly shared, no flag);
-  `from_`→`on`; `Batch*`/`build_batch_transforms`/`apply_batch_transforms` public
-  surface removed** (`apply_batch_transforms` becomes the internal tail-runner).
+  `from_`→`on`; `build_batch_transforms`/`apply_batch_transforms` REMOVED — dense ops
+  run via `Compose`; `build_sensor_gpu_stages` returns a `Compose`.
 - **The numpy `Densify`/`AddNoise`/`Digitize` trio in `detector_transforms.py` is
   REWRITTEN, not relabeled** — today they operate on a nested `sensor` sub-dict keyed
   by string plane label (`sub['raw']`/`sub['shape']`), with per-event seed from
@@ -396,8 +396,8 @@ From the pimm + SPINE author reviews of an earlier draft:
    couplings), `SetupGraph`, `BuildNexus`, `Align`; **rewrite** the numpy
    `Densify`/`AddNoise`/`Digitize` trio (sub-dict → `on='sensor'` flat transforms,
    `scope='sample'`); `dense_ops`/`offset2batch` unchanged (offset stays `(B,)`).
-5. **Helpers + tail-runner**: `to_batched_coords`, `batch[i]`, typed-internal collate;
-   `apply_batch_transforms` → internal tail-runner; the `Collect`-pivot split.
+5. **Helpers**: `to_batched_coords`, `batch[i]`, typed-internal collate. Dense ops run
+   via `Compose` (no runner); `build_sensor_gpu_stages` returns a `Compose`.
 6. **Validation** (`Collect`/`Compose` at build).
 7. **Migration + cleanup**: delete `Streams`/`Batch*`; migrate configs/models;
    empty-part/feat/val contracts.
@@ -419,7 +419,8 @@ Order: 0 → 1 → 2 → 3 → (4 ∥ 5) → 6 → 7 → 8. Keep the suite green
 - `_roles` **survives collate** (carried on the batch); other `_`-temporaries dropped.
 - Multi-part `Apply(on=tuple)` is **implicitly shared** (one RNG draw, co-registration) —
   **no `shared` flag**; independent augmentation = separate `Apply` blocks.
-- No batch-transform concept; `ToDevice` opens the per-batch segment; tail-runner internal.
+- No batch-transform concept and NO runner; `ToDevice` opens the per-batch segment,
+  which the ordinary `Compose` runs (dense ops are `scope='sample'`, self-seeding).
 - Typed-internal/bare-at-boundary; ship `to_batched_coords`/`batch[i]`.
 - `MultiCrop` owns crop couplings; geometric transforms `keys=`-scoped.
 - Label renumber: FK join stays in dataset; compact-then-distinct-count-shift in collate.
@@ -435,7 +436,7 @@ Blocking issues found and resolved in this revision:
 - **`event` role disambiguated + `raw` role added.** `event` is explicitly tagged
   (not shape-derived) and exempt from offset-concat; `raw` (densify COO) is per-point
   but never sliced. (§3)
-- **`_roles` survives collate** — needed by `batch[i]`/tail-runner. (§5)
+- **`_roles` survives collate** — needed by `batch[i]` and post-collate dense ops. (§5)
 - **`Apply(on=)` ↔ `index_operator` contract specified**: blind transforms must route
   row-drops through `index_operator`; cross-store edges are producer-only. (§4)
 - **Label renumber = compact-per-event then distinct-count base; FK join stays in
@@ -448,7 +449,7 @@ relevant phase):
 - **`instance` role mechanics** — who emits `<part>_inst_offset`, and how
   `index_operator` slices instances vs points (different cardinalities). (Phase 1/4)
 - **Empty tail (sparse-only) = no-op**: an empty post-`Collect` segment means the
-  trainer's normal `.to(device)` applies; the tail-runner is a no-op. (Phase 5)
+  trainer's normal `.to(device)` applies; no dense Compose runs. (Phase 5)
 - **`Align` must be the last pre-`Collect` structural op** for the part it aligns
   (a later subsample would desync). (Phase 4)
 - **`name` is guaranteed present + list-typed post-collate** (seed identity). (Phase 5)
@@ -473,7 +474,8 @@ relevant phase):
 **Deliberately deferred (not omissions):**
 - numpy `Densify/AddNoise/Digitize` still work as pre-collate transforms via `Apply`
   scoping (sub-dict); a flat `on=` rewrite is optional cleanup, not correctness.
-- One-list split / Lightning `on_after_batch_transfer` wiring: `apply_batch_transforms`
-  is the tail-runner; the auto-split of a single config list is trainer integration.
+- One-list split / Lightning `on_after_batch_transfer` wiring: dense ops run via
+  `Compose` (`BatchTransformMixin`); auto-splitting a single config list at `Collect`
+  is trainer integration, not yet built.
 - pimm-side config/model migration (nested→flat keys, `Apply(on=)`, `MultiCrop`) —
   pimm's repo, config-level (pimm calls pimm-data).

@@ -36,12 +36,12 @@ Every challenge is `Dataset(modalities=…, labels=…) → transforms → Colle
 | Challenge | modalities | labels | key transforms | Collect | config | status |
 |---|---|---|---|---|---|---|
 | 3D semantic seg (5-class motif) | `('step',)` | `'pdg'` | `RemapSegment(motif_5cls)`, `GridSample`, `RandomRotate/Flip` | `step`: coord/grid_coord/segment, feat=coord+energy | **recipe** `configs/jaxtpc/semseg_5cls.py` (pimm training cfg: `…/semseg-pt-v3m2-jaxtpc-5cls.py`) | recipe ✓ |
-| 3D instance seg | `('step',)` | `'cluster'` or `'ancestor'` | `GridSample` | `step`: coord/segment/instance | — | planned |
-| 3D self-supervised (SSL) | `('step',)` | — | `MultiCrop` (global/local) | `step`: coord, feat | — | planned |
-| Interaction classification/grouping | `('step',)` | `'interaction'` | `GridSample` | `step`: coord/segment | — | planned |
-| Raw-readout SSL | `('sensor',)` | — | `MultiCrop` | `sensor`: coord/feat | — | planned |
-| Instance seg on hits | `('hits',)` | `'cluster'` | `GridSample` | `hits`: coord/segment/instance | — | planned |
-| sensor → step charge/energy recon | `('step','sensor')` | `'pdg'` (opt) | per-modality `Apply` | `sensor` in, `step` target | — | planned |
+| 3D instance seg | `('step',)` | `'cluster'` or `'ancestor'` | `GridSample` | `step`: coord/segment/instance | — | planned (jaxtpc supervised — deferred) |
+| 3D self-supervised (SSL) | `('step',)` | — | `MultiCrop` (global/local) | `global`/`local`: coord/origin_coord/feat | `configs/jaxtpc/ssl_step.py` | recipe ✓ |
+| Interaction classification/grouping | `('step',)` | `'interaction'` | `GridSample` | `step`: coord/segment | — | planned (jaxtpc supervised — deferred) |
+| Raw-readout SSL | `('sensor',)` | — | `MultiCrop` (no geom aug — index space) | `global`/`local`: coord/feat | `configs/jaxtpc/ssl_sensor.py` | recipe ✓ |
+| Instance seg on hits | `('hits',)` | `'cluster'` | `GridSample` | `hits`: coord/segment/instance | — | planned (jaxtpc supervised — deferred) |
+| sensor → step charge/energy recon | `('step','sensor')` | `'pdg'` (opt) | per-modality `Apply` | `sensor` in, `step` target | — | planned (jaxtpc supervised — deferred) |
 
 ## LUCiD (Water Cherenkov; PMT)
 
@@ -49,16 +49,16 @@ Direct from `LUCID_DATASET.md` §"Tasks → files" (`inst→hits`, `seg→step`)
 
 | Challenge | modalities | labels | Collect | config | status |
 |---|---|---|---|---|---|
-| SSL on raw PMT readout | `('sensor',)` | — | `sensor`: coord/feat (`MultiCrop`) | `configs/lucid/pretrain/pretrain-sonata-v1m1-sk-like-mu-e.py` | exists |
-| SSL on per-particle decomposition | `('hits',)` | — | `hits`: coord/feat | — | planned |
-| SSL on 3D segments | `('step',)` | — | `step`: coord/feat | — | planned |
-| Per-segment Cherenkov forward sim | `('step',)` | — | `step`: coord + physics (beta/n_cherenkov) | — | planned |
-| sensor → inst denoising/deconv | `('sensor','hits')` | — | `sensor` in, `hits` target | — | planned |
-| sensor → seg recon (vertex/energy/dir) | `('sensor','step')` | — | `sensor` in, `step` target | — | planned |
+| SSL on raw PMT readout | `('sensor',)` | — | `AggregateSensorHits(flatten=False)` + `MultiCrop` → `global`/`local` | `configs/lucid/ssl_sensor.py` (new-API port of the sonata pretrain) | recipe ✓ |
+| SSL on per-particle decomposition | `('hits',)` | — | `MultiCrop` → `global`/`local` | `configs/lucid/ssl_hits.py` | recipe ✓ |
+| SSL on 3D segments | `('step',)` | — | `MultiCrop` → `global`/`local` | `configs/lucid/ssl_step.py` | recipe ✓ |
+| Per-segment Cherenkov forward sim | `('step',)` | — | `step`: coord + physics (beta/n_cherenkov) | — | planned (needs physics-key names) |
+| sensor → inst denoising/deconv | `('sensor','hits')` | — | `sensor` in, `hits` target | (same shape as recon, `step`→`hits`) | planned |
+| sensor → seg recon (vertex/energy/dir) | `('sensor','step')` | — | `sensor` in, `step` target | `configs/lucid/recon_sensor_to_step.py` | recipe ✓ |
 | Per-PMT semantic/instance seg | `('hits',)` | `True` | `hits`: coord/grid_coord/segment/instance, feat=coord+energy+time | **recipe** `configs/lucid/perpmt_seg_hits.py` | recipe ✓ |
-| 3D semantic/instance seg on segments | `('step',)` | `True` | `step`: coord/segment/instance | — | planned |
-| Event class/regression (E, dir, vertex) | `('sensor','hits')` | `True` | event-level target + `sensor`/`hits` | — | planned |
-| Containment-filtered training | (any) | `True` | + `min_segments`/containment filter | — | planned |
+| 3D semantic/instance seg on segments | `('step',)` | `True` | `step`: coord/grid_coord/segment/instance | `configs/lucid/seg_step.py` | recipe ✓ |
+| Event class/regression (E, dir, vertex) | `('sensor','hits')` | `True` | event-level target + `sensor`/`hits` | — | planned (MultiModalEventDataset — needs WAND sources/holdout) |
+| Containment-filtered training | (any) | `True` | + `min_segments`/containment filter | — | planned (filter flag on any recipe) |
 
 ## Optical (PMT light; per-chunk waveforms — new)
 
@@ -70,10 +70,10 @@ docs.)
 | Challenge | schema | modalities | per-chunk target | Collect | status |
 |---|---|---|---|---|---|
 | Interaction/operator discrimination | `label` | `('sensor',)` | `instance` (interaction) | `sensor`: pmt_id/t0_ns/length/pe/instance/adc | recipe ✓ `configs/optical/interaction_discrimination.py` |
-| Per-channel PE regression | `label` | `('sensor',)` | `pe` | `sensor`: … + pe target | planned |
-| Waveform SSL / pretraining | `label`/`east_west` | `('sensor',)` | — | `sensor`: adc (+ wave_offset) | planned |
-| Waveform denoising / compression | `east_west` | `('sensor',)` | clean/coeffs | `sensor`: adc | planned |
-| Side-aware readout (east/west) | `east_west` | `('sensor',)` | — | `sensor`: … + instance(side) | planned |
+| Per-channel PE regression | `label` | `('sensor',)` | `pe` | `sensor`: … + pe target | recipe ✓ (same loader: `configs/optical/interaction_discrimination.py`, target=pe) |
+| Waveform SSL / pretraining | `label`/`east_west` | `('sensor',)` | — | `sensor`: adc (+ wave_offset) | recipe ✓ (data via the label/east-west loaders; view-gen is model-side) |
+| Waveform denoising / compression | `east_west` | `('sensor',)` | clean/coeffs | `sensor`: adc | recipe ✓ `configs/optical/eastwest_readout.py` |
+| Side-aware readout (east/west) | `east_west` | `('sensor',)` | — | `sensor`: … + instance(side) | recipe ✓ `configs/optical/eastwest_readout.py` |
 
 ---
 
@@ -94,20 +94,27 @@ two layers:
    the existing naming (`<task>-<backbone>-<dataset>-<variant>.py`). Needs pimm's
    `libs/pimm-data` submodule bumped to the redesign SHA first.
 
-Built so far (representative-first, one per dataset): JAXTPC semseg, LUCiD
-per-PMT seg on hits, Optical interaction discrimination — all `recipe ✓`.
+Built (all `recipe ✓`, verified by `tests/test_campaign_configs.py`): JAXTPC
+semseg / ssl_step / ssl_sensor; LUCiD perpmt_seg_hits / ssl_sensor / ssl_hits /
+ssl_step / seg_step / recon_sensor_to_step; Optical interaction_discrimination /
+eastwest_readout. **Deferred:** JAXTPC supervised-label rows (per request); LUCiD
+event-class/regression (needs WAND `MultiModalEventDataset` sources/holdout) and
+per-segment Cherenkov (needs physics-key names); optical waveform model (TBD).
 
 ### Findings / follow-ups
 
-- **LUCiD raw-sensor SSL** is not new-API-clean yet: `AggregateSensorHits` writes
-  the aggregated point cloud to the **top level** and drops the sub-dict (legacy
-  flatten), but the new `MultiCrop(on='sensor')` + `Collect(modalities=)` flow
-  needs it kept **nested** in the `sensor` sub-dict. Add a nested write-back mode
-  to `AggregateSensorHits` before building the SSL recipes (`MultiViewGenerator`
-  → `MultiCrop` is otherwise a direct swap).
-- **`coord` comes out float64** after `NormalizeCoord` (python-float scale). Cast
-  to float32 in the recipe if the target model is strict (feat is already
-  float32 via `feat_keys`).
+- **DONE — LUCiD raw-sensor SSL new-API fix:** `AggregateSensorHits` gained
+  `flatten=False` (keep the aggregate **nested** in the `sensor` sub-dict) so the
+  new `MultiCrop(on='sensor')` + `Collect(modalities=)` flow works
+  (`MultiViewGenerator` → `MultiCrop` is otherwise a direct swap). Used by the
+  LUCiD `ssl_sensor` / `recon_sensor_to_step` recipes.
+- **Sensor `coord` is detector-index space** (2D wire / 3D pixel for JAXTPC, 3D
+  PMT positions for LUCiD): JAXTPC sensor recipes skip `NormalizeCoord` and 3D
+  rotations (not meaningful on index space); normalization/aug there is
+  readout-dependent and left to the pimm lift.
+- **`coord` comes out float64** after `NormalizeCoord` (python-float scale) —
+  model-only concern (feat is float32 via `feat_keys`); not fixed (models out of
+  scope for now).
 - **Optical needs a waveform/sequence model** (PT-v3 is point-cloud only); the
   optical recipes are data-half + placeholder model until one exists.
 

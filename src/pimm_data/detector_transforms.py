@@ -457,7 +457,7 @@ class AggregateSensorHits:
 
     def __init__(self, modality='sensor', time_aggregation='earliest',
                  coord_key='coord', energy_key='energy', time_key='time',
-                 sensor_key='sensor_idx'):
+                 sensor_key='sensor_idx', flatten=True):
         if time_aggregation not in self._STRATEGIES:
             raise ValueError(
                 f"time_aggregation must be one of {self._STRATEGIES}, "
@@ -468,6 +468,12 @@ class AggregateSensorHits:
         self.energy_key = energy_key
         self.time_key = time_key
         self.sensor_key = sensor_key
+        # flatten=True (default, legacy): lift the aggregated point cloud to the
+        # TOP level and drop the sub-dict (the old event-SSL flat flow).
+        # flatten=False keeps it NESTED in the modality sub-dict, which the new
+        # flat-prefixed flow needs (Apply(on=) / MultiCrop(on=) /
+        # Collect(modalities=) all read a sub-dict).
+        self.flatten = flatten
 
     def __call__(self, data_dict):
         sub = data_dict.get(self.modality)
@@ -480,10 +486,13 @@ class AggregateSensorHits:
             np.asarray(src[self.coord_key]),
             np.asarray(src[self.energy_key]),
             np.asarray(src[self.time_key]))
-        for k, v in agg.items():
-            data_dict[k] = v
-        if isinstance(sub, dict):                 # lift out of the modality
-            data_dict.pop(self.modality, None)
+        if isinstance(sub, dict) and not self.flatten:
+            sub.update(agg)                       # keep nested (new-API flow)
+        else:
+            for k, v in agg.items():
+                data_dict[k] = v
+            if isinstance(sub, dict):             # lift out of the modality
+                data_dict.pop(self.modality, None)
         return data_dict
 
     def _aggregate(self, sensor_idx, coord, energy, time):

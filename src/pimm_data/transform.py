@@ -201,6 +201,16 @@ class Collect(object):
                 "modality OR modalities={...} for the namespaced multi form — "
                 "not both.")
             self.modalities_spec = dict(modalities)
+            # build-time validation (REDESIGN §9): fail at construction, not epoch 1.
+            for mname, spec in self.modalities_spec.items():
+                if 'keys' not in spec:
+                    raise ValueError(
+                        f"Collect: part {mname!r} spec needs 'keys=' (got {sorted(spec)}).")
+                bad = set(dict(spec.get('roles', {}))) - set(spec['keys'])
+                if bad:
+                    raise ValueError(
+                        f"Collect: part {mname!r} declares roles for non-collected "
+                        f"keys {sorted(bad)} — add them to keys= or drop the role.")
         else:
             assert keys is not None, "Collect requires keys= (or modalities=)."
             self.modalities_spec = None

@@ -12,12 +12,13 @@ Three ops, used post-collate by :mod:`pimm_data.batch_transforms`:
 * ``densify`` — scatter sparse hits into per-plane dense grids ``{plane_id: (B, W_p, T)}``
   via ``index_add_`` (== last-wins assignment on the unique COO this assumes; the
   numpy reference :class:`pimm_data.detector_transforms.Densify` asserts uniqueness).
-* ``add_intrinsic_noise`` — add fresh forward noise. **Hybrid RNG:** coherent reuses
-  the numpy oracle (:func:`pimm_data.noise.coherent_noise`, bit-exact to JAXTPC,
-  device-independent) moved to device; incoherent is a torch-FFT port (statistical
-  parity only — cuFFT/torch RNG ≠ numpy, and torch CPU vs CUDA RNG streams differ, so
-  incoherent realizations are **device-specific**). Uses ``std(unbiased=False)`` to
-  match the numpy ddof=0 renorm.
+* ``add_intrinsic_noise`` — add fresh forward noise. **Both components are torch-FFT
+  ports running on-device** (coherent: :func:`_coherent_torch`; incoherent:
+  :func:`_incoherent_torch`) — statistical parity to the numpy forward model only
+  (torch RNG ≠ numpy, and torch CPU vs CUDA streams differ → realizations are
+  **device-specific**, not bit-exact to JAXTPC). ``coherent_numpy=True`` opts back into
+  the bit-exact / device-independent numpy coherent oracle (slower: per-group Python
+  loop + H2D copy). Uses ``std(unbiased=False)`` to match the numpy ddof=0 renorm.
 * ``digitize`` — quantize to ADC codes (bit-exact to :func:`pimm_data.noise.digitize`).
 """
 
@@ -31,9 +32,11 @@ from .noise import (coherent_noise as _coherent_noise_np, _series_spectrum_shape
                     DEFAULT_COH_RMS_ADC, DEFAULT_COH_CORNER_FREQ_HZ,
                     DEFAULT_COH_SLOPE, DEFAULT_COH_BETA)
 
-# decorrelate the incoherent torch RNG stream from the coherent numpy stream
-# (masked to 63 bits so it doesn't fight the 63-bit seed mask in manual_seed)
+# decorrelate the per-component torch RNG streams from each other (and so a
+# numpy-coherent run and a torch-coherent run never share a draw). Masked to 63
+# bits so they don't fight the 63-bit seed mask in manual_seed.
 _INCOH_SEED_SALT = 0x9E3779B97F4A7C15 & ((1 << 63) - 1)
+_COH_SEED_SALT = 0xD1B54A32D192ED03 & ((1 << 63) - 1)
 
 
 def offset2batch(offset):
@@ -162,22 +165,73 @@ def _incoherent_torch(shape, wire_lengths_m, *, gen, enc, series_spectrum,
     return (shaped + white).to(torch.float32)
 
 
+def _coherent_spectrum_torch(n_ticks, corner_freq_hz, spectral_slope,
+                             sampling_rate_hz, device):
+    """A(f) = 1/(1 + f/f_corner)^(slope/2), A(0)=0 — torch twin of `_coherent_spectrum`."""
+    freqs = torch.fft.rfftfreq(n_ticks, d=1.0 / sampling_rate_hz, device=device)
+    spec = 1.0 / (1.0 + freqs / corner_freq_hz) ** (spectral_slope / 2.0)
+    spec[0] = 0.0
+    return spec.to(torch.float32)
+
+
+def _coherent_torch(n_channels, n_ticks, *, gen, group_size, rms_adc,
+                    corner_freq_hz, spectral_slope, beta, sampling_rate_hz, device):
+    """On-device coherent noise (n_channels, n_ticks) — torch port of
+    :func:`pimm_data.noise.coherent_noise`.
+
+    Vectorised over groups (no Python per-group loop / no H2D copy): draws all
+    ``n_groups`` shaped waveforms at once, applies adjacent-group anti-correlation
+    ``w - beta*(w_{g-1}+w_{g+1})``, renormalises per-group RMS to ``rms_adc`` by the
+    **measured realized RMS AFTER coupling** (matching the numpy oracle, JAXTPC
+    6998d81 — NOT the analytic/Parseval pre-coupling norm, which runs ~2% high at
+    the default beta), then broadcasts by ``wire//group_size``. Statistical parity
+    to numpy only (torch RNG != numpy; CUDA vs CPU streams differ) — the realisation
+    is device-specific, not bit-exact to JAXTPC, exactly as the incoherent port.
+    """
+    n_groups = (n_channels + group_size - 1) // group_size
+    spec = _coherent_spectrum_torch(n_ticks, corner_freq_hz, spectral_slope,
+                                    sampling_rate_hz, device)            # (n_freq,)
+    real = torch.randn(n_groups, spec.numel(), generator=gen, device=device) * spec
+    imag = torch.randn(n_groups, spec.numel(), generator=gen, device=device) * spec
+    imag[:, 0] = 0.0                                  # DC real (zero imag, alias-free)
+    if n_ticks % 2 == 0:
+        imag[:, -1] = 0.0                            # Nyquist real (even n)
+    base = torch.fft.irfft(torch.complex(real, imag), n=n_ticks, dim=1)  # (n_groups, n_ticks)
+
+    z = base.new_zeros(1, n_ticks)
+    left = torch.cat([z, base[:-1]], dim=0)
+    right = torch.cat([base[1:], z], dim=0)
+    wav = base - beta * (left + right)
+
+    # normalize AFTER coupling by the measured realized RMS (matches the numpy
+    # oracle's post-coupling renorm; the coupling inflates variance vs Parseval).
+    realized = wav.pow(2).mean().sqrt()
+    if float(realized) > 0:
+        wav = wav * (rms_adc / realized)
+
+    wire_to_group = torch.arange(n_channels, device=device) // group_size
+    return wav[wire_to_group].to(torch.float32)
+
+
 def add_intrinsic_noise(grids, geom, *, seeds, enc=DEFAULT_ENC,
                         coherent=True, incoherent=False,
                         sampling_rate_hz=DEFAULT_SAMPLING_RATE_HZ,
                         group_size=DEFAULT_GROUP_SIZE, coh_rms=DEFAULT_COH_RMS_ADC,
                         coh_corner_freq_hz=DEFAULT_COH_CORNER_FREQ_HZ,
                         coh_spectral_slope=DEFAULT_COH_SLOPE, beta=DEFAULT_COH_BETA,
-                        series_spectrum=None):
+                        series_spectrum=None, coherent_numpy=False):
     """Add fresh forward noise to per-plane dense grids in place; returns ``grids``.
 
     ``grids`` : ``{plane_id: (B, W, T)}`` on-device. ``geom`` : registry with
     ``n_wires``/``n_ticks`` (+ ``wire_lengths`` per plane when ``incoherent``).
     ``seeds`` : ``(B,)`` per-event content-addressed seeds.
 
-    Coherent uses the numpy oracle (bit-exact to JAXTPC) per event (one numpy
-    Generator per event, advanced across planes in order — matching the per-event
-    draw order); incoherent uses a per-event torch Generator on-device (statistical).
+    Both components run **on-device** via per-event torch Generators (one per event,
+    advanced across planes in canonical-id order). Statistical parity to the numpy
+    forward model, not bit-exact — torch RNG differs from numpy and CUDA vs CPU
+    streams differ, so realisations are device-specific. Set ``coherent_numpy=True``
+    to recover the bit-exact / device-independent numpy coherent oracle (slower:
+    per-group Python loop + H2D copy) for provenance / cross-checks.
     """
     if not grids:
         return grids
@@ -187,7 +241,7 @@ def add_intrinsic_noise(grids, geom, *, seeds, enc=DEFAULT_ENC,
     # of the canonical plane id (not dict insertion / HDF5 enumeration order).
     gids = sorted(grids.keys())
 
-    if coherent:
+    if coherent and coherent_numpy:                  # bit-exact numpy oracle (opt-in)
         for b in range(B):
             rng = np.random.default_rng(int(seeds[b]))
             for gid in gids:
@@ -198,6 +252,16 @@ def add_intrinsic_noise(grids, geom, *, seeds, enc=DEFAULT_ENC,
                     spectral_slope=coh_spectral_slope, beta=beta,
                     sampling_rate_hz=sampling_rate_hz)
                 grids[gid][b] += torch.as_tensor(coh, dtype=torch.float32, device=dev)
+    elif coherent:                                   # on-device torch (default)
+        for b in range(B):
+            gen = torch.Generator(device=dev)
+            gen.manual_seed((int(seeds[b]) ^ _COH_SEED_SALT) & ((1 << 63) - 1))
+            for gid in gids:
+                _, W, T = grids[gid].shape
+                grids[gid][b] += _coherent_torch(
+                    W, T, gen=gen, group_size=group_size, rms_adc=coh_rms,
+                    corner_freq_hz=coh_corner_freq_hz, spectral_slope=coh_spectral_slope,
+                    beta=beta, sampling_rate_hz=sampling_rate_hz, device=dev)
 
     if incoherent:
         for b in range(B):

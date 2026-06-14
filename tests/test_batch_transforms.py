@@ -90,14 +90,36 @@ def test_densify_rejects_float_indices():
 # --------------------------------------------------------------------------
 
 def test_coherent_batched_matches_numpy_oracle():
+    # the bit-exact numpy oracle is now opt-in (coherent_numpy=True); the default
+    # path is the on-device torch port (statistical parity only — see below).
     W, T, gid, seed = 200, 2048, 0, 12345
     geom = {gid: {'n_wires': W, 'n_ticks': T}}
     grids = {gid: torch.zeros(1, W, T)}
     dense_ops.add_intrinsic_noise(grids, geom, seeds=[seed], coherent=True,
-                                  incoherent=False, group_size=64, coh_rms=2.5)
+                                  incoherent=False, group_size=64, coh_rms=2.5,
+                                  coherent_numpy=True)
     expected = coherent_noise_np(W, T, np.random.default_rng(seed),
                                  group_size=64, rms_adc=2.5)
     assert np.allclose(grids[gid][0].numpy(), expected, atol=1e-5)
+
+
+def test_coherent_torch_default_statistical():
+    """Default (on-device torch) coherent: not bit-exact to numpy, but matches the
+    forward model's structure — within-group identical, per-group RMS == coh_rms,
+    adjacent-group anti-correlation ~ -2β/(1+2β²)."""
+    W, T, gid, gs, rms, beta = 256, 4096, 0, 64, 2.5, 0.15
+    geom = {gid: {'n_wires': W, 'n_ticks': T}}
+    grids = {gid: torch.zeros(1, W, T)}
+    dense_ops.add_intrinsic_noise(grids, geom, seeds=[3], coherent=True,
+                                  incoherent=False, group_size=gs, coh_rms=rms,
+                                  beta=beta)
+    x = grids[gid][0].numpy()
+    g0 = x[:gs]                                      # within-group identical (common mode)
+    assert np.abs(g0 - g0[0]).max() < 1e-5
+    reps = x[::gs]                                   # one wire per group
+    assert abs(reps.std(axis=1).mean() - rms) < 0.2  # per-group RMS ~ coh_rms
+    lag1 = np.corrcoef(reps[:-1].ravel(), reps[1:].ravel())[0, 1]
+    assert abs(lag1 - (-2 * beta / (1 + 2 * beta ** 2))) < 0.05
 
 
 def test_incoherent_rms_matches_enc_statistical():
@@ -233,8 +255,11 @@ def test_coherent_batched_matches_jaxtpc(T):
     W, gid, seed = 200, 0, 777
     geom = {gid: {'n_wires': W, 'n_ticks': T}}
     grids = {gid: torch.zeros(1, W, T)}
+    # bit-exactness to JAXTPC is the numpy oracle's contract (coherent_numpy=True);
+    # the default torch path is statistical-parity only.
     dense_ops.add_intrinsic_noise(grids, geom, seeds=[seed], coherent=True,
-                                  incoherent=False, group_size=64, coh_rms=2.5)
+                                  incoherent=False, group_size=64, coh_rms=2.5,
+                                  coherent_numpy=True)
     expected = cn.generate_coherent_noise(
         n_wires=W, n_ticks=T, group_size=64, beta=0.15, rms_adc=2.5,
         corner_freq_hz=20000.0, spectral_slope=1.5, sampling_rate_hz=2e6,
@@ -325,12 +350,16 @@ def test_canonical_plane_id_rejects_malformed():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA")
 def test_coherent_cpu_matches_cuda():
+    # Only the numpy oracle (coherent_numpy=True) is device-independent. The default
+    # torch coherent uses torch RNG, whose CPU/CUDA streams differ by design, so it
+    # is device-specific (like the incoherent port) — not tested for cross-device equality.
     W, T, gid = 64, 1024, 0
     geom = {gid: {'n_wires': W, 'n_ticks': T}}
     out = {}
     for dev in ('cpu', 'cuda'):
         g = {gid: torch.zeros(1, W, T, device=dev)}
-        dense_ops.add_intrinsic_noise(g, geom, seeds=[5], coherent=True, incoherent=False)
+        dense_ops.add_intrinsic_noise(g, geom, seeds=[5], coherent=True,
+                                      incoherent=False, coherent_numpy=True)
         out[dev] = g[gid].cpu()
     assert torch.allclose(out['cpu'], out['cuda'], atol=1e-5)  # numpy oracle -> device-independent
 

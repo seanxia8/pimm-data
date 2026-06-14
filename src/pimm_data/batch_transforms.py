@@ -153,17 +153,19 @@ class BatchAddIntrinsicNoise:
                  group_size=DEFAULT_GROUP_SIZE, coh_rms=DEFAULT_COH_RMS_ADC,
                  coh_corner_freq_hz=DEFAULT_COH_CORNER_FREQ_HZ,
                  coh_spectral_slope=DEFAULT_COH_SLOPE, beta=DEFAULT_COH_BETA,
-                 series_spectrum=None):
+                 series_spectrum=None, coherent_numpy=False):
         self.geom = geom
         self.modality = modality
         self.base_seed = int(base_seed)
         self.coherent, self.incoherent = bool(coherent), bool(incoherent)
         self.dense_key = dense_key
         self.enc = tuple(enc)
+        # coherent_numpy=True opts into the bit-exact / device-independent numpy
+        # coherent oracle; default is the on-device torch port (device-specific).
         self.kw = dict(sampling_rate_hz=sampling_rate_hz, group_size=group_size,
                        coh_rms=coh_rms, coh_corner_freq_hz=coh_corner_freq_hz,
                        coh_spectral_slope=coh_spectral_slope, beta=beta,
-                       series_spectrum=series_spectrum)
+                       series_spectrum=series_spectrum, coherent_numpy=coherent_numpy)
 
     def __call__(self, batch):
         # SELF-CONTAINED seeding: derive per-event seeds from batch['name'] here, so

@@ -77,6 +77,22 @@ def test_optical_label_recipe(optical_data_root):
     assert int(b['sensor_offset'][-1]) != int(b['sensor_wave_offset'][-1])
 
 
+_EVENT = ['lucid/event_mu_vs_e.py', 'lucid/event_pid4.py',
+          'lucid/event_pi0_vs_e.py']  # genie configs absent from the synth fixture
+
+
+@pytest.mark.parametrize('rel', _EVENT, ids=_EVENT)
+def test_lucid_event_recipes(wand_synth_data_root, rel):
+    """MultiModalEventDataset event-class recipes: holdout partitions, event_label
+    carried to the batch (the new Collect passthrough)."""
+    spec = dict(copy.deepcopy(runpy.run_path(os.path.join(_CONFIGS, rel))['data']['train']))
+    spec.update(data_root=wand_synth_data_root, split='train',
+                holdout=dict(seed=0, n_per_config=1), min_points=0)
+    ds = build_dataset(spec)
+    keys, b = _collate(ds)
+    assert {'sensor_coord', 'sensor_feat', 'sensor_offset', 'event_label'} <= keys
+
+
 def test_optical_eastwest_recipe(optical_eastwest_data_root):
     ds = _load_train('optical/eastwest_readout.py',
                      data_root=optical_eastwest_data_root,

@@ -322,7 +322,10 @@ class Collect(object):
         # G2: name/split are the cross-boundary identity carriers (content-
         # addressed seeding reads top-level ``batch['name']``) — pass them
         # through UNCONDITIONALLY, at the top level, for both forms.
-        for passthrough in ("name", "split"):
+        # event_label/config_id/weight are MultiModalEventDataset's event-level
+        # label/identity carriers — also passed through so event-classification
+        # batches keep their target (collate stacks them to (B,) via event role).
+        for passthrough in ("name", "split", "event_label", "config_id", "weight"):
             if passthrough in data_dict and passthrough not in out:
                 out[passthrough] = data_dict[passthrough]
         return out

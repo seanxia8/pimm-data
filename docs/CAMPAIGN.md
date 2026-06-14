@@ -57,7 +57,7 @@ Direct from `LUCID_DATASET.md` §"Tasks → files" (`inst→hits`, `seg→step`)
 | sensor → seg recon (vertex/energy/dir) | `('sensor','step')` | — | `sensor` in, `step` target | `configs/lucid/recon_sensor_to_step.py` | recipe ✓ |
 | Per-PMT semantic/instance seg | `('hits',)` | `True` | `hits`: coord/grid_coord/segment/instance, feat=coord+energy+time | **recipe** `configs/lucid/perpmt_seg_hits.py` | recipe ✓ |
 | 3D semantic/instance seg on segments | `('step',)` | `True` | `step`: coord/grid_coord/segment/instance | `configs/lucid/seg_step.py` | recipe ✓ |
-| Event class/regression (E, dir, vertex) | `('sensor','hits')` | `True` | event-level target + `sensor`/`hits` | — | planned (MultiModalEventDataset — needs WAND sources/holdout) |
+| Event classification (μ/e, PID, π0/e, ν-flavor) | `('sensor',)` per source | `event_label` | `MultiModalEventDataset` + per-config holdout | `configs/lucid/event_{mu_vs_e,pid4,pi0_vs_e,genie_numu_vs_nue}.py` | recipe ✓ |
 | Containment-filtered training | (any) | `True` | + `min_segments`/containment filter | — | planned (filter flag on any recipe) |
 
 ## Optical (PMT light; per-chunk waveforms — new)
@@ -101,6 +101,45 @@ eastwest_readout. **Deferred:** JAXTPC supervised-label rows (per request); LUCi
 event-class/regression (needs WAND `MultiModalEventDataset` sources/holdout) and
 per-segment Cherenkov (needs physics-key names); optical waveform model (TBD).
 
+### Real data roots (verified loading)
+
+| Dataset | `data_root` | `dataset_name` | `split` |
+|---|---|---|---|
+| JAXTPC (wire) | `/sdf/data/neutrino/omara/JAXTPC_Wire/test_00_00_02` | `sim_wire` | `run_0027575715` (per-run nested) |
+| LUCiD (WAND) | `/sdf/data/neutrino/cjesus/DORAEMON/WAND/SK_like/config_NNNNNN` | `wc` | `''` |
+| Optical (label) | `/sdf/data/neutrino/doraemon/optical_test_00_00_02` | `test_00_00_02_pixel` | `''` |
+
+`examples/toy_run.py` was run against these. Loaded + ran a toy model end-to-end:
+JAXTPC ssl_step/ssl_sensor; LUCiD ssl_sensor/ssl_hits/perpmt_seg_hits (WAND
+config_000001); Optical interaction (**K=4836 chunks / 72.2M packed samples /
+24 interaction classes** on 2 real events). Real-data findings:
+- **JAXTPC `labl` absent** at that path → supervised JAXTPC seg can't load there
+  (deferred anyway). Non-supervised JAXTPC works.
+- **LUCiD step↔`edep` dir mismatch:** the LUCiD step reader globs `step/wc_step_*`
+  but WAND ships `edep/wc_edep_*`. So LUCiD `step` recipes (ssl_step, seg_step,
+  recon) need either an `edep` dir-name option on the reader or a symlink. `sensor`
+  / `hits` recipes load WAND fine.
+- Real WAND `MultiModalEventDataset` index build is **slow (minutes)** — event
+  recipes are gated on a synthetic two-config fixture instead.
+
+### WAND config map + event-classification source combinations
+
+18 single-/multi-particle WAND configs: 001 mu-, 002 pi+, 003 e-, 004 pi-,
+005 pi0, 006 low-E e-, 007–012 multi-particle gun, 013 GENIE νμ, 014 GENIE νe,
+015–018 pile-up. The event-class recipes pick source combinations:
+
+| Recipe | sources (config → class) | physics |
+|---|---|---|
+| `event_mu_vs_e` | 001 mu- / 003 e- | single-ring lepton ID (Cherenkov PID) |
+| `event_pid4` | 001/003/002/005 | 4-class single-particle PID |
+| `event_pi0_vs_e` | 003 e- / 005 pi0 | NC-π0 ring-counting background |
+| `event_genie_numu_vs_nue` | 013 / 014 | realistic ν-flavor (GENIE CC) |
+
+Each uses the deterministic `(config_id, file_index, source_event_idx)` holdout
+(`n_per_config=2000`) for reproducible train/val/test. Further combos to add when
+wanted: energy regression within a config, single-vs-pileup (001/003 vs 015–018),
+multi-particle topologies (007–012).
+
 ### Findings / follow-ups
 
 - **DONE — LUCiD raw-sensor SSL new-API fix:** `AggregateSensorHits` gained
@@ -117,6 +156,11 @@ per-segment Cherenkov (needs physics-key names); optical waveform model (TBD).
   scope for now).
 - **Optical needs a waveform/sequence model** (PT-v3 is point-cloud only); the
   optical recipes are data-half + placeholder model until one exists.
+- **DONE — event_label passthrough:** `Collect` now passes `event_label`/
+  `config_id`/`weight` (MMED's event carriers) through like `name`/`split`, so
+  event-classification batches keep their target. Minor: `event_label` currently
+  collates to a *list of np.arrays* (one per sample) — cast to a tensor
+  model-side, or fold a scalar-stacking step into the event role later.
 
 Update the `config`/`status` cell as each is built so this stays the campaign's
 source of truth.

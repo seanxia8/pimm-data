@@ -137,6 +137,17 @@ def optical_eastwest_data_root(tmp_path_factory):
 
 
 @pytest.fixture(scope='session')
+def wand_synth_data_root(tmp_path_factory):
+    """Synthetic WAND-like layout for MultiModalEventDataset event-class recipes:
+    two single-particle config dirs (the names the recipes' sources reference)."""
+    root = str(tmp_path_factory.mktemp('wand_synth'))
+    for cfg in ('config_000001', 'config_000003', 'config_000002', 'config_000005'):
+        make_lucid_sample(os.path.join(root, cfg), dataset_name='wc',
+                          n_events=6, n_sensors=64, n_hits=200)
+    return root
+
+
+@pytest.fixture(scope='session')
 def jaxtpc_is_synthetic():
     """True when the JAXTPC fixture falls back to the synthesizer."""
     return 'JAXTPC_DATA_ROOT' not in os.environ

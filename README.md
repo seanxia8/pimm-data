@@ -75,7 +75,7 @@ ds = JAXTPCDataset(
             dict(type="GridSample", grid_size=0.5, mode="train",
                  return_grid_coord=True),
         ]),
-        dict(type="Collect", modalities={
+        dict(type="Collect", parts={
             "step": dict(keys=("coord", "grid_coord", "segment"),
                          feat_keys=("coord", "energy"))}),
     ],
@@ -378,7 +378,7 @@ The dataset returns a nested dict → transforms process it → `Collect` emits 
 flat, underscore-prefixed dict → `collate_fn` reduces samples into a batch.
 
 ```
-get_data()  →  Apply(on='step', transforms=[...])  →  Collect(modalities={'step': ...})  →  collate_fn
+get_data()  →  Apply(on='step', transforms=[...])  →  Collect(parts={'step': ...})  →  collate_fn
 nested dict     augments step sub-dict (numpy)         flat step_* (tensors) + _roles      one batch
 ```
 
@@ -401,7 +401,7 @@ dict(type='Apply', on='step', transforms=[
 
 ### Collect
 
-Terminal transform. `modalities={part: dict(keys=…, feat_keys=…, …)}` pulls each
+Terminal transform. `parts={part: dict(keys=…, feat_keys=…, …)}` pulls each
 part's keys, builds `feat` (concatenated `feat_keys`), tensorizes numpy → torch,
 and flattens to **`part_key`** (`step_coord`, `step_segment`, `step_feat`) plus
 a derived `<part>_offset` and a `_roles` map for non-default-role keys. `name` /
@@ -409,7 +409,7 @@ a derived `<part>_offset` and a `_roles` map for non-default-role keys. `name` /
 row-space); `roles=` tags keys (`raw` / `edge` / `instance` / `label` / `event`).
 
 ```python
-dict(type='Collect', modalities={
+dict(type='Collect', parts={
     'step': dict(keys=('coord', 'grid_coord', 'segment'),
                  feat_keys=('coord', 'energy'))})
 # Batch (after collate_fn): step_coord, step_grid_coord, step_segment,
@@ -431,7 +431,7 @@ transform=[
     ]),
     dict(type='MultiCrop', on='step', view_keys=('coord', 'origin_coord', 'energy'),
          global_view_num=2, local_view_num=6),
-    dict(type='Collect', modalities={
+    dict(type='Collect', parts={
         'global': dict(keys=('coord', 'origin_coord', 'energy', 'offset'),
                        offset_keys_dict={}, feat_keys=('coord', 'energy')),
         'local':  dict(keys=('coord', 'energy', 'offset'),
@@ -448,7 +448,7 @@ transform=[
         dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
         dict(type='GridSample', grid_size=0.001, mode='train', return_grid_coord=True),
     ]),
-    dict(type='Collect', modalities={
+    dict(type='Collect', parts={
         'step': dict(keys=('coord', 'grid_coord', 'segment'),
                      feat_keys=('coord', 'energy'))}),
 ]
@@ -462,7 +462,7 @@ transform=[
         dict(type='RemapSegment', scheme='motif_5cls'),
         dict(type='GridSample', grid_size=1.0, mode='train', return_grid_coord=True),
     ]),
-    dict(type='Collect', modalities={
+    dict(type='Collect', parts={
         'hits': dict(keys=('coord', 'grid_coord', 'segment', 'instance'),
                      feat_keys=('coord', 'energy'))}),
 ]

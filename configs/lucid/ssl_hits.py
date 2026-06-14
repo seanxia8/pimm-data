@@ -21,7 +21,7 @@ transform = [
          global_view_num=2, global_view_scale=(0.55, 1.0),
          local_view_num=6, local_view_scale=(0.15, 0.45),
          global_transform=_view_aug, local_transform=_view_aug, max_size=30000),
-    dict(type="Collect", modalities={
+    dict(type="Collect", parts={
         "global": dict(keys=("coord", "origin_coord", "energy", "offset"),
                        offset_keys_dict={}, feat_keys=("coord", "energy")),
         "local": dict(keys=("coord", "energy", "offset"),

@@ -16,7 +16,7 @@ import os
 _data_root = os.environ.get("OPTICAL_EASTWEST_DATA_ROOT", "/path/to/optical_eastwest")
 _dataset_name = os.environ.get("OPTICAL_EASTWEST_DATASET_NAME", "light")
 
-_collect = dict(type="Collect", modalities={
+_collect = dict(type="Collect", parts={
     "sensor": dict(
         keys=("pmt_id", "t0_ns", "length", "pe", "instance", "adc"),
         feat_keys=("pe",),

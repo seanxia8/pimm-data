@@ -216,7 +216,7 @@ def test_no_bare_coord_anywhere(jaxtpc_data_root):
         forbidden = {'coord', 'energy', 'segment', 'instance',
                      'plane_id', 'volume_id'}
         bare = forbidden & set(d.keys())
-        assert not bare, f"bare keys {bare} leaked in modalities={mods}"
+        assert not bare, f"bare keys {bare} leaked in parts={mods}"
 
 
 def test_bridges_present_iff_inst(jaxtpc_data_root):

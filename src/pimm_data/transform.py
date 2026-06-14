@@ -199,16 +199,21 @@ def index_operator(data_dict, index, duplicate=False):
 class Collect(object):
     """Pack a flat batch dict for the model from possibly-nested input.
 
-    ``modality=`` scopes the source to ``data_dict[modality]`` before pulling
-    keys. Use it to extract one modality from a nested
-    ``{'step': {...}, 'hits': {...}}``-style dict produced by datasets
-    that emit multiple point clouds::
+    The batch unit is a **part** — an offset-bearing key group (a modality, an
+    SSL view, a graph store, a second row-space), matching the ``_roles`` /
+    ``Apply(on=)`` vocabulary. Two forms:
 
-        Collect(modality='step', keys=['coord', 'segment'],
-                feat_keys=['coord', 'energy'])
+    * **single (bare):** ``part=`` scopes the source to ``data_dict[part]`` and
+      emits BARE keys (``coord``, ``segment``, ``feat``, …) — what single-cloud
+      models read::
 
-    Output keys stay bare (``coord``, ``segment``, ``feat``, …) so
-    collate / Point / model see the same flat shape as before.
+          Collect(part='step', keys=['coord', 'segment'], feat_keys=['coord', 'energy'])
+
+    * **multi (flat-prefixed):** ``parts={name: spec}`` emits FLAT keys
+      ``<name>_<key>`` (``step_coord``, …) + a ``_roles`` map, one self-contained
+      part per name.
+
+    ``modality=`` / ``modalities=`` are DEPRECATED aliases for ``part=`` / ``parts=``.
 
     Extracted numpy arrays are converted to torch tensors automatically.
     This enables zero-copy IPC when used with ``DataLoader(num_workers>0)``
@@ -216,39 +221,44 @@ class Collect(object):
     instead of pickling the full array.
     """
 
-    def __init__(self, keys=None, offset_keys_dict=None, modality=None,
-                 modalities=None, **kwargs):
+    def __init__(self, keys=None, offset_keys_dict=None, part=None, parts=None,
+                 modality=None, modalities=None, **kwargs):
+        # `part=`/`parts=` are the canonical names — the batch unit is a *part*: an
+        # offset-bearing key group (a modality, an SSL view, a graph store, a second
+        # row-space), matching the `_roles`/`Apply(on=)` vocabulary.
+        # `modality=`/`modalities=` are DEPRECATED aliases (still accepted).
+        parts = modalities if parts is None else parts
+        part = modality if part is None else part
         # Two forms (mutually exclusive):
-        #  * single  — keys=/modality=/feat *_keys → a flat (bare) dict, scoped to
-        #    data_dict[modality] (or the top level). Byte-identical to before.
-        #  * multi   — modalities={name: spec} → a NAMESPACED dict {name:{...}, …},
-        #    one self-contained sub-dict per modality, each with its OWN offset.
+        #  * single  — keys=/part=/feat *_keys → a flat (bare) dict, scoped to
+        #    data_dict[part] (or the top level). Byte-identical to before.
+        #  * multi   — parts={name: spec} → a NAMESPACED dict {name:{...}, …}, one
+        #    self-contained sub-dict per part, each with its OWN offset.
         #    spec = dict(keys=…, offset_keys_dict=…, <feat>_keys=…). collate_fn
         #    packs the nesting (Mapping recursion + per-sub-dict offset cumsum).
-        if modalities is not None:
-            assert keys is None and modality is None and not kwargs, (
-                "Collect: pass EITHER (keys=/modality=/feat_keys=) for one "
-                "modality OR modalities={...} for the namespaced multi form — "
-                "not both.")
-            self.modalities_spec = dict(modalities)
+        if parts is not None:
+            assert keys is None and part is None and not kwargs, (
+                "Collect: pass EITHER (keys=/part=/feat_keys=) for one part "
+                "OR parts={...} for the namespaced multi form — not both.")
+            self.parts_spec = dict(parts)
             # build-time validation (REDESIGN §9): fail at construction, not epoch 1.
-            for mname, spec in self.modalities_spec.items():
+            for pname, spec in self.parts_spec.items():
                 if 'keys' not in spec:
                     raise ValueError(
-                        f"Collect: part {mname!r} spec needs 'keys=' (got {sorted(spec)}).")
+                        f"Collect: part {pname!r} spec needs 'keys=' (got {sorted(spec)}).")
                 bad = set(dict(spec.get('roles', {}))) - set(spec['keys'])
                 if bad:
                     raise ValueError(
-                        f"Collect: part {mname!r} declares roles for non-collected "
+                        f"Collect: part {pname!r} declares roles for non-collected "
                         f"keys {sorted(bad)} — add them to keys= or drop the role.")
         else:
-            assert keys is not None, "Collect requires keys= (or modalities=)."
-            self.modalities_spec = None
+            assert keys is not None, "Collect requires keys= (or parts=)."
+            self.parts_spec = None
             if offset_keys_dict is None:
                 offset_keys_dict = dict(offset="coord")
             self.keys = keys
             self.offset_keys = offset_keys_dict
-            self.modality = modality
+            self.part = part
             self.kwargs = kwargs
 
     @staticmethod
@@ -292,32 +302,32 @@ class Collect(object):
         return keys, offset_keys, roles, spec  # remaining entries are <feat>_keys specs
 
     def __call__(self, data_dict):
-        if self.modalities_spec is not None:
+        if self.parts_spec is not None:
             # REDESIGN: namespaced form emits FLAT underscore-prefixed keys
             # (`step_coord`, `step_offset`, `step_feat`) + a `_roles` map, NOT a
             # nested `{step:{…}}` dict. collate routes flat+_roles to the role-driven
-            # reduce. Single-modality form (below) stays bare/byte-identical.
+            # reduce. Single-part form (below) stays bare/byte-identical.
             out = dict()
             roles = dict()
-            for mname, spec in self.modalities_spec.items():
-                if not isinstance(data_dict.get(mname), dict):
+            for pname, spec in self.parts_spec.items():
+                if not isinstance(data_dict.get(pname), dict):
                     avail = [k for k in data_dict if isinstance(data_dict.get(k), dict)]
                     raise KeyError(
-                        f"Collect(modalities=): modality {mname!r} absent or not a "
+                        f"Collect(parts=): part {pname!r} absent or not a "
                         f"sub-dict; available: {avail}")
                 keys, offset_keys, part_roles, feat_specs = self._parse_spec(spec)
-                projected = self._project(data_dict[mname], keys, offset_keys, feat_specs)
+                projected = self._project(data_dict[pname], keys, offset_keys, feat_specs)
                 for k, v in projected.items():
-                    out[f'{mname}_{k}'] = v
+                    out[f'{pname}_{k}'] = v
                 # roles: producer-stamped (sub-dict '_roles') first, then spec roles=
-                for k, r in data_dict[mname].get('_roles', {}).items():
+                for k, r in data_dict[pname].get('_roles', {}).items():
                     if k in keys:                     # only for keys actually collected
-                        roles[f'{mname}_{k}'] = r
+                        roles[f'{pname}_{k}'] = r
                 for k, r in part_roles.items():       # explicit spec roles= win
-                    roles[f'{mname}_{k}'] = r
+                    roles[f'{pname}_{k}'] = r
             out['_roles'] = roles                     # always present -> flat-roles collate
         else:
-            source = data_dict[self.modality] if self.modality is not None else data_dict
+            source = data_dict[self.part] if self.part is not None else data_dict
             out = self._project(source, self.keys, self.offset_keys, self.kwargs)
         # G2: name/split are the cross-boundary identity carriers (content-
         # addressed seeding reads top-level ``batch['name']``) — pass them

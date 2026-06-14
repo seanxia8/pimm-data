@@ -75,7 +75,7 @@ def test_end_to_end_transform_collate(jaxtpc_data_root):
                  mode='train', return_grid_coord=True),
         ]),
         dict(type='ToTensor'),
-        dict(type='Collect', modality='step',
+        dict(type='Collect', part='step',
              keys=('coord', 'grid_coord', 'segment'),
              feat_keys=('coord', 'energy')),
     ]

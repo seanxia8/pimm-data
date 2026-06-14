@@ -13,7 +13,7 @@ from pimm_data import _roles
 
 
 def _collect_cfg():
-    return [dict(type='Collect', modalities={
+    return [dict(type='Collect', parts={
         'sensor': dict(
             keys=('pmt_id', 't0_ns', 'length', 'pe', 'instance', 'adc'),
             feat_keys=('pe',),

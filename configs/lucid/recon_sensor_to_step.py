@@ -26,7 +26,7 @@ transform = [
         dict(type="NormalizeCoord", center=[0, 0, 0], scale=_scale),
         dict(type="LogTransform", min_val=0.01, max_val=20.0, keys=("energy",)),
     ]),
-    dict(type="Collect", modalities={
+    dict(type="Collect", parts={
         "sensor": dict(keys=("coord",), feat_keys=("coord", "energy", "time")),
         "step": dict(keys=("coord",), feat_keys=("coord", "energy")),
     }),

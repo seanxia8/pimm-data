@@ -18,7 +18,7 @@ def _event(n, seed):
 def test_setup_graph_edges_shift_on_collate():
     pipe = Compose([
         dict(type='SetupGraph', on='step', k=2),
-        dict(type='Collect', modalities={
+        dict(type='Collect', parts={
             'step': dict(keys=('coord', 'edge_index'), feat_keys=('coord', 'energy'))}),
     ])
     s0 = pipe(_event(4, 0))
@@ -41,7 +41,7 @@ def test_build_nexus_cross_store():
                 'sp':  {'coord': rng.standard_normal((ns, 3)).astype('float32')}}
     pipe = Compose([
         dict(type='BuildNexus', on=('hit', 'sp'), to='nexus', k=1),
-        dict(type='Collect', modalities={
+        dict(type='Collect', parts={
             'hit':   dict(keys=('coord',)),
             'sp':    dict(keys=('coord',)),
             'nexus': dict(keys=('edge_index',), offset_keys_dict={})}),

@@ -23,7 +23,7 @@ _data_root = os.environ.get("OPTICAL_DATA_ROOT",
                             "/sdf/data/neutrino/doraemon/optical_test_00_00_02")
 _dataset_name = os.environ.get("OPTICAL_DATASET_NAME", "test_00_00_02_pixel")
 
-_collect = dict(type="Collect", modalities={
+_collect = dict(type="Collect", parts={
     "sensor": dict(
         keys=("pmt_id", "t0_ns", "length", "pe", "instance", "adc"),
         feat_keys=("pe",),

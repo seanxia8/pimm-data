@@ -9,7 +9,7 @@ fixture. They make the RESTRUCTURE plan's two breaking phases verifiable:
   changes but the decorated ``segment``/``instance`` values must be **unchanged**.
 
 After those phases, migrate the dataset-build calls below to the new API
-(``modalities=``/``labels=``, ``Collect(modality=)``) — the frozen fingerprints
+(``modalities=``/``labels=``, ``Collect(part=)``) — the frozen fingerprints
 MUST still match. A diff here means the refactor changed data, not just names.
 
 The hashes are specific to the synthetic seed=0 fixture, so the full comparison
@@ -86,7 +86,7 @@ def _assert(actual, expected, synthetic):
 
 def test_pf1_c1_step_ssl_batch(jaxtpc_data_root, jaxtpc_is_synthetic):
     ds = _ds(jaxtpc_data_root, ('step',),
-             transform=[dict(type='Collect', modality='step',
+             transform=[dict(type='Collect', part='step',
                              keys=('coord',), feat_keys=('coord', 'energy'))])
     batch = collate_fn([ds[0], ds[1]])
     _assert(_fps(batch), C1_BATCH, jaxtpc_is_synthetic)
@@ -94,7 +94,7 @@ def test_pf1_c1_step_ssl_batch(jaxtpc_data_root, jaxtpc_is_synthetic):
 
 def test_pf1_c2_step_seg_batch(jaxtpc_data_root, jaxtpc_is_synthetic):
     ds = _ds(jaxtpc_data_root, ('step', 'labl'),
-             transform=[dict(type='Collect', modality='step',
+             transform=[dict(type='Collect', part='step',
                              keys=('coord', 'segment'),
                              feat_keys=('coord', 'energy'))])
     batch = collate_fn([ds[0], ds[1]])

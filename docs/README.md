@@ -38,7 +38,7 @@ straight to the decision log: `engagement_plan_transform_dataset_placement.md`
 
 | Doc | Class | One-liner |
 |---|---|---|
-| `REDESIGN.md` | **CANONICAL** | The current data-layer contract: flat-prefixed batch, per-part `_roles`, map→reduce→map, `Apply(on=)` / `Collect(modalities=)`, `MultiCrop`, two row-spaces. **Supersedes the streams/collate design in `impl/05` (streams were removed).** |
+| `REDESIGN.md` | **CANONICAL** | The current data-layer contract: flat-prefixed batch, per-part `_roles`, map→reduce→map, `Apply(on=)` / `Collect(parts=)`, `MultiCrop`, two row-spaces. **Supersedes the streams/collate design in `impl/05` (streams were removed).** |
 | `CAMPAIGN.md` | **CANONICAL** | Cross-dataset challenge matrix (JAXTPC/LUCiD/Optical) — `dataset × task → (modalities, labels, transforms, Collect)` + config tracker. Consolidates LUCiD's `Tasks→files` and pimm's `Task→config`. |
 | `DESIGN.md` | **CANONICAL** | Authoritative design + decisions (the "why"). *Being written now; if briefly absent, it is still canonical.* |
 | `ROADMAP.md` | **CANONICAL** | Phased plan + sign-off checklist (the "what/when"). *Being written now; if briefly absent, still canonical.* |

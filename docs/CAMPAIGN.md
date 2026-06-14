@@ -84,7 +84,7 @@ challenge's data loading *exactly*, not the model. So the campaign is built in
 two layers:
 
 1. **Recipe (pimm-data `configs/<dataset>/<challenge>.py`)** — the data-loading
-   half only, in the new flat-prefixed API (`Apply(on=)` + `Collect(modalities=)`).
+   half only, in the new flat-prefixed API (`Apply(on=)` + `Collect(parts=)`).
    It lives here because the new API + `OpticalDataset` exist only in pimm-data
    (not yet in pimm's pinned submodule), so a recipe is **verifiable now**:
    `tests/test_campaign_configs.py` execs each recipe against the synthetic
@@ -152,7 +152,7 @@ multi-particle topologies (007–012).
 
 - **DONE — LUCiD raw-sensor SSL new-API fix:** `AggregateSensorHits` gained
   `flatten=False` (keep the aggregate **nested** in the `sensor` sub-dict) so the
-  new `MultiCrop(on='sensor')` + `Collect(modalities=)` flow works
+  new `MultiCrop(on='sensor')` + `Collect(parts=)` flow works
   (`MultiViewGenerator` → `MultiCrop` is otherwise a direct swap). Used by the
   LUCiD `ssl_sensor` / `recon_sensor_to_step` recipes.
 - **Sensor `coord` is detector-index space** (2D wire / 3D pixel for JAXTPC, 3D

@@ -68,13 +68,13 @@ def test_lucid_labels_param_matches_legacy(lucid_data_root):
 # --- Phase 2: namespaced multi-modality Collect ---------------------------
 
 def test_namespaced_multimodality_collect(jaxtpc_data_root):
-    """REDESIGN: Collect(modalities={...}) -> FLAT underscore-prefixed keys
+    """REDESIGN: Collect(parts={...}) -> FLAT underscore-prefixed keys
     (step_coord, sensor_wire, …) + _roles, each part its OWN offset, junk dropped."""
     from pimm_data import collate_fn
     ds = JAXTPCDataset(
         data_root=jaxtpc_data_root, split='', dataset_name='sim',
         modalities=('step', 'sensor'), labels='pdg', min_deposits=0, max_len=2,
-        transform=[dict(type='Collect', modalities={
+        transform=[dict(type='Collect', parts={
             'step':   dict(keys=('coord', 'segment'), feat_keys=('coord', 'energy')),
             'sensor': dict(keys=('wire', 'time', 'value', 'plane_gid')),
         })])
@@ -95,7 +95,7 @@ def test_collect_rejects_both_forms():
     import pytest
     from pimm_data.transform import Collect
     with pytest.raises(AssertionError):
-        Collect(keys=['coord'], modalities={'step': dict(keys=['coord'])})
+        Collect(keys=['coord'], parts={'step': dict(keys=['coord'])})
 
 
 def test_sensor_consumed_sparse_no_densify(jaxtpc_data_root):
@@ -105,7 +105,7 @@ def test_sensor_consumed_sparse_no_densify(jaxtpc_data_root):
     ds = JAXTPCDataset(
         data_root=jaxtpc_data_root, split='', dataset_name='sim',
         modalities=('step', 'sensor'), labels='pdg', min_deposits=0, max_len=2,
-        transform=[dict(type='Collect', modalities={
+        transform=[dict(type='Collect', parts={
             'step':   dict(keys=('coord', 'segment'), feat_keys=('coord', 'energy')),
             'sensor': dict(keys=('coord',), feat_keys=('coord', 'energy')),
         })])
@@ -128,7 +128,7 @@ def test_dense_stage_scoped_to_namespaced_modality(jaxtpc_data_root):
         data_root=jaxtpc_data_root, split='', dataset_name='sim',
         modalities=('step', 'sensor'), labels='pdg', min_deposits=0, max_len=2,
         wire_lengths_per_plane=wl,
-        transform=[dict(type='Collect', modalities={
+        transform=[dict(type='Collect', parts={
             'step':   dict(keys=('coord', 'segment'), feat_keys=('coord', 'energy')),
             'sensor': dict(keys=('wire', 'time', 'value', 'plane_gid')),
         })])
@@ -198,5 +198,5 @@ def test_g2_bare_collect_passes_name_split():
 def test_g2_modality_collect_passes_name_split():
     data = {'step': {'coord': np.zeros((3, 3), np.float32)},
             'name': 'evt0', 'split': 'train'}
-    out = Collect(modality='step', keys=['coord'])(data)
+    out = Collect(part='step', keys=['coord'])(data)
     assert out['name'] == 'evt0' and out['split'] == 'train'

@@ -30,7 +30,7 @@ _transform = [
         dict(type="GridSample", grid_size=grid_size, hash_type="fnv",
              mode="train", sum_keys=("energy",), min_keys=("time",)),
     ]),
-    dict(type="Collect", modalities={
+    dict(type="Collect", parts={
         "sensor": dict(keys=("coord",), feat_keys=("coord", "energy", "time"))}),
 ]
 

@@ -254,7 +254,7 @@ def test_recipe_3d_supervised_step(jaxtpc_data_root):
                      dict(type='RandomFlip', p=0.5),
                  ]),
                  dict(type='ToTensor'),
-                 dict(type='Collect', modality='step',
+                 dict(type='Collect', part='step',
                       keys=('coord', 'grid_coord', 'segment'),
                       feat_keys=('coord', 'energy')),
              ])
@@ -275,7 +275,7 @@ def test_recipe_2d_supervised_hits(jaxtpc_data_root):
                      dict(type='RandomFlip', p=0.5, axes=('x', 'y')),
                  ]),
                  dict(type='ToTensor'),
-                 dict(type='Collect', modality='hits',
+                 dict(type='Collect', part='hits',
                       keys=('coord', 'grid_coord', 'segment', 'instance'),
                       feat_keys=('coord', 'energy')),
              ])
@@ -293,7 +293,7 @@ def test_recipe_ssl_raw_sensor(jaxtpc_data_root):
                      dict(type='ShufflePoint'),
                  ]),
                  dict(type='ToTensor'),
-                 dict(type='Collect', modality='sensor',
+                 dict(type='Collect', part='sensor',
                       keys=('coord', 'grid_coord'),
                       feat_keys=('coord', 'energy')),
              ])
@@ -316,7 +316,7 @@ def test_recipe_denoising_sensor_plus_hits(jaxtpc_data_root):
                           return_grid_coord=True),
                  ]),
                  dict(type='ToTensor'),
-                 dict(type='Collect', modality='sensor',
+                 dict(type='Collect', part='sensor',
                       keys=('coord', 'grid_coord'),
                       feat_keys=('coord', 'energy')),
              ])

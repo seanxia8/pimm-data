@@ -21,7 +21,7 @@ def _pipe(gnum=2, lnum=3):
         dict(type='MultiCrop', on='step', view_keys=('coord', 'energy'),
              global_view_num=gnum, global_view_scale=(0.4, 1.0),
              local_view_num=lnum, local_view_scale=(0.1, 0.4)),
-        dict(type='Collect', modalities={
+        dict(type='Collect', parts={
             'global': dict(keys=('coord', 'offset'), offset_keys_dict={},
                            feat_keys=('coord', 'energy')),
             'local':  dict(keys=('coord', 'offset'), offset_keys_dict={},

@@ -31,7 +31,7 @@ _aug = [
     dict(type="RandomRotate", angle=[-1, 1], axis="y", center=[0, 0, 0], p=0.8),
     dict(type="RandomFlip", p=0.5),
 ]
-_collect = dict(type="Collect", modalities={
+_collect = dict(type="Collect", parts={
     "step": dict(keys=("coord", "grid_coord", "segment"),
                  feat_keys=("coord", "energy"))})
 

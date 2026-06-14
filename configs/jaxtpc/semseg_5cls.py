@@ -3,7 +3,7 @@
 CAMPAIGN.md row: JAXTPC | 3D semantic seg | modalities=('step',), labels='pdg'.
 
 This file is the **data-loading half** (new flat-prefixed API: Apply(on=) +
-Collect(modalities=)). The model/optimizer/hooks half is a placeholder to fill
+Collect(parts=)). The model/optimizer/hooks half is a placeholder to fill
 when lifted into a pimm training config (see CAMPAIGN.md — DefaultSegmentorV2 +
 PT-v3m2, in_channels=4).
 

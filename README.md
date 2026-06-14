@@ -6,9 +6,14 @@ Reads simulation output produced by:
 
 - **JAXTPC** — Liquid Argon TPC simulation (`step` / `sensor` / `hits` / `labl` HDF5)
 - **LUCiD** — Water Cherenkov / PhotonSim simulation (`step` / `sensor` / `hits` / `labl` HDF5, `format_version >= 3`)
+- **Optical** — PMT light (goop) output as per-chunk waveforms (`OpticalDataset`; label & east/west schemas)
 
-Datasets inherit from `torch.utils.data.Dataset` and return nested
-`dict[str, dict[str, np.ndarray]]` samples (one sub-dict per modality).
+Datasets inherit from `torch.utils.data.Dataset`. `get_data(idx)` returns a
+nested `dict[str, dict[str, np.ndarray]]` sample (one sub-dict per modality);
+`ds[idx]` runs the transform pipeline, whose terminal `Collect` emits a **flat,
+underscore-prefixed** dict (`step_coord`, `sensor_wire`, …) + per-part `offset`
++ a small `_roles` map. `collate_fn` reduces those samples into one batch
+(concat by `offset`, role-driven). See **Transform pipeline** below.
 
 ## Quick start
 
@@ -38,6 +43,21 @@ sample = ds.get_data(0)
 print(sample["sensor"].keys())   # coord, energy, time, sensor_idx
 ```
 
+### Load an Optical (PMT light) dataset
+
+```python
+from pimm_data import OpticalDataset
+
+# label schema (per-interaction chunks); 'east_west' for light_output.h5
+ds = OpticalDataset(data_root="/path/to/optical", dataset_name="...", schema="label")
+sample = ds.get_data(0)
+print(sample["sensor"].keys())   # pmt_id, t0_ns, length, pe, instance, adc, _roles
+```
+
+Each `sensor` row is a waveform **chunk**; the raw samples are a packed second
+row-space (`adc`), tagged `('instance','sensor_wave_offset')` so collate concats
+them and `split_event` slices by sample count. See `docs/CAMPAIGN.md`.
+
 ### Training-ready example
 
 ```python
@@ -47,22 +67,23 @@ from pimm_data import JAXTPCDataset, collate_fn
 ds = JAXTPCDataset(
     data_root="/path/to/jaxtpc_data",
     split="",
-    modalities=("step", "labl"),
-    label_key="pdg",
+    modalities=("step",),
+    labels="pdg",                       # labl is a label source (attaches segment/instance)
     transform=[
-        dict(type="ApplyToStream", stream="step", transforms=[
+        dict(type="Apply", on="step", transforms=[
             dict(type="RemapSegment", scheme="motif_5cls"),
             dict(type="GridSample", grid_size=0.5, mode="train",
                  return_grid_coord=True),
         ]),
-        dict(type="Collect", stream="step",
-             keys=("coord", "grid_coord", "segment"),
-             feat_keys=("coord", "energy")),
+        dict(type="Collect", modalities={
+            "step": dict(keys=("coord", "grid_coord", "segment"),
+                         feat_keys=("coord", "energy"))}),
     ],
 )
 loader = DataLoader(ds, batch_size=4, num_workers=4,
                     collate_fn=collate_fn, pin_memory=True)
 batch = next(iter(loader))
+# batch -> step_coord, step_grid_coord, step_segment, step_feat, step_offset, ...
 ```
 
 > **`transform` takes a plain list of dicts**, not a `Compose` object.
@@ -76,8 +97,10 @@ batch = next(iter(loader))
 > sit directly in `data_root/step/` with no split subdirectory, pass
 > `split=''`.
 
-> **`label_key`** controls which labl column populates `segment`.
-> Options: `'pdg'` (default), `'cluster'`, `'interaction'`, `'ancestor'`.
+> **`labels=`** opt-in attaches `segment`/`instance` from `labl` (JAXTPC:
+> `labels='pdg'|'cluster'|'interaction'|'ancestor'` picks the source column;
+> LUCiD: `labels=True`). `labl` is a *label source*, not a modality — prefer
+> `labels=` over putting `'labl'` in `modalities` (still accepted, deprecated).
 > Use `RemapSegment` to map raw values to task-specific class indices.
 
 ---
@@ -351,91 +374,102 @@ dict(type='RemapSegment', scheme='motif_5cls')
 
 ## Transform pipeline
 
-The dataset returns a nested dict → transforms process it →
-`Collect` extracts a flat dict for the model.
+The dataset returns a nested dict → transforms process it → `Collect` emits a
+flat, underscore-prefixed dict → `collate_fn` reduces samples into a batch.
 
 ```
-get_data()  →  ApplyToStream(stream='step', transforms=[...])  →  Collect(stream='step', ...)
-nested dict       augments step sub-dict (numpy)                    flat dict (tensors)
+get_data()  →  Apply(on='step', transforms=[...])  →  Collect(modalities={'step': ...})  →  collate_fn
+nested dict     augments step sub-dict (numpy)         flat step_* (tensors) + _roles      one batch
 ```
 
-### ApplyToStream
+### Apply
 
-Dispatches transforms to a specific modality sub-dict. Inner transforms
-operate on numpy. If the stream is missing, the transform is a no-op
-(pass `required=True` to raise instead).
+Targets the part-agnostic transform library at one modality. `Apply(on='step')`
+exposes `data['step']`'s keys as **bare** canonical names (`coord`, `segment`,
+`energy`), runs the inner transforms, and writes them back into the sub-dict. A
+multi-part `Apply(on=('step','sensor'))` is **implicitly shared** — same RNG draw
+per part (co-registered rotate/flip); independent augmentation = separate `Apply`
+blocks. If a part is missing it's a no-op (`required=True` to raise).
+(`ApplyToModality` is a back-compat alias for the single-part form.)
 
 ```python
-dict(type='ApplyToStream', stream='step', transforms=[
+dict(type='Apply', on='step', transforms=[
     dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
-    dict(type='GridSample', grid_size=0.001, mode='train',
-         return_grid_coord=True),
+    dict(type='GridSample', grid_size=0.001, mode='train', return_grid_coord=True),
 ])
 ```
 
 ### Collect
 
-Terminal transform. Extracts keys from a stream, auto-converts numpy
-to torch tensors, and builds the `offset` key for batching.
+Terminal transform. `modalities={part: dict(keys=…, feat_keys=…, …)}` pulls each
+part's keys, builds `feat` (concatenated `feat_keys`), tensorizes numpy → torch,
+and flattens to **`part_key`** (`step_coord`, `step_segment`, `step_feat`) plus
+a derived `<part>_offset` and a `_roles` map for non-default-role keys. `name` /
+`split` pass through. `offset_keys_dict=` declares extra offsets (e.g. a second
+row-space); `roles=` tags keys (`raw` / `edge` / `instance` / `label` / `event`).
 
 ```python
-dict(type='Collect', stream='step',
-     keys=('coord', 'grid_coord', 'segment'),
-     feat_keys=('coord', 'energy'))
-# Output: {coord, grid_coord, segment, feat, offset, name, split}
+dict(type='Collect', modalities={
+    'step': dict(keys=('coord', 'grid_coord', 'segment'),
+                 feat_keys=('coord', 'energy'))})
+# Batch (after collate_fn): step_coord, step_grid_coord, step_segment,
+#                           step_feat, step_offset, name, split, _roles
 ```
 
-`ToTensor` is **not needed** — `Collect` handles tensor conversion.
-This also enables efficient `DataLoader` parallelism (see below).
+`ToTensor` is **not needed** — `Collect` tensorizes (enabling fd-IPC under
+`num_workers>0`). `Collect` must be **last**.
 
 ### Practical configs
 
-**SSL on 3D step (no labels):**
+**SSL on 3D step (multi-crop, no labels):**
 
 ```python
 transform=[
-    dict(type='ApplyToStream', stream='step', transforms=[
+    dict(type='Apply', on='step', transforms=[
         dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
-        dict(type='GridSample', grid_size=0.001, mode='train',
-             return_grid_coord=True),
-        dict(type='ShufflePoint'),
+        dict(type='Copy', keys_dict={'coord': 'origin_coord'}),
     ]),
-    dict(type='Collect', stream='step',
-         keys=('coord', 'grid_coord'),
-         feat_keys=('coord', 'energy')),
+    dict(type='MultiCrop', on='step', view_keys=('coord', 'origin_coord', 'energy'),
+         global_view_num=2, local_view_num=6),
+    dict(type='Collect', modalities={
+        'global': dict(keys=('coord', 'origin_coord', 'energy', 'offset'),
+                       offset_keys_dict={}, feat_keys=('coord', 'energy')),
+        'local':  dict(keys=('coord', 'energy', 'offset'),
+                       offset_keys_dict={}, feat_keys=('coord', 'energy'))}),
 ]
 ```
 
-**Supervised segmentation (step + labl):**
+**Supervised segmentation (step, labels='pdg'):**
 
 ```python
 transform=[
-    dict(type='ApplyToStream', stream='step', transforms=[
+    dict(type='Apply', on='step', transforms=[
         dict(type='RemapSegment', scheme='motif_5cls'),
         dict(type='NormalizeCoord', center=[0, 0, 0], scale=4000.0),
-        dict(type='GridSample', grid_size=0.001, mode='train',
-             return_grid_coord=True),
+        dict(type='GridSample', grid_size=0.001, mode='train', return_grid_coord=True),
     ]),
-    dict(type='Collect', stream='step',
-         keys=('coord', 'grid_coord', 'segment'),
-         feat_keys=('coord', 'energy')),
+    dict(type='Collect', modalities={
+        'step': dict(keys=('coord', 'grid_coord', 'segment'),
+                     feat_keys=('coord', 'energy'))}),
 ]
 ```
 
-**Instance segmentation on 2D hits:**
+**Instance segmentation on hits (labels):**
 
 ```python
 transform=[
-    dict(type='ApplyToStream', stream='hits', transforms=[
+    dict(type='Apply', on='hits', transforms=[
         dict(type='RemapSegment', scheme='motif_5cls'),
-        dict(type='GridSample', grid_size=1.0, mode='train',
-             return_grid_coord=True),
+        dict(type='GridSample', grid_size=1.0, mode='train', return_grid_coord=True),
     ]),
-    dict(type='Collect', stream='hits',
-         keys=('coord', 'grid_coord', 'segment', 'instance'),
-         feat_keys=('coord', 'energy')),
+    dict(type='Collect', modalities={
+        'hits': dict(keys=('coord', 'grid_coord', 'segment', 'instance'),
+                     feat_keys=('coord', 'energy'))}),
 ]
 ```
+
+Ready-to-run data-loader recipes for many challenges live in `configs/`
+(see `docs/CAMPAIGN.md`).
 
 ---
 
@@ -447,8 +481,8 @@ transform=[
 from torch.utils.data import DataLoader
 from pimm_data import JAXTPCDataset, collate_fn
 
-ds = JAXTPCDataset(data_root="...", modalities=("step", "labl"),
-                   label_key="pdg", transform=[...])
+ds = JAXTPCDataset(data_root="...", modalities=("step",),
+                   labels="pdg", transform=[...])
 loader = DataLoader(ds, batch_size=4, num_workers=4,
                     collate_fn=collate_fn, pin_memory=True)
 ```
@@ -525,14 +559,19 @@ registered automatically on `import pimm_data`).
 
 ### Batch output
 
-`collate_fn` concatenates variable-length point clouds and tracks
-boundaries with a cumulative `offset` tensor:
+`collate_fn` concatenates variable-length point clouds per part and tracks
+boundaries with a cumulative **`<part>_offset`** tensor (`(B,)`, no leading 0).
+Keys are flat and underscore-prefixed; it is role-driven (a carried `_roles`
+map): point/raw concat by offset, edges shift, labels renumber, instance/second
+row-spaces concat by their own offset, event keys stack:
 
 ```python
-batch['coord'].shape    # (total_points, 3)
-batch['feat'].shape     # (total_points, 4)
-batch['segment'].shape  # (total_points,)
-batch['offset']         # tensor([N0, N0+N1, N0+N1+N2, ...])
+batch['step_coord'].shape    # (total_points, 3)
+batch['step_feat'].shape     # (total_points, 4)
+batch['step_segment'].shape  # (total_points,)
+batch['step_offset']         # tensor([N0, N0+N1, ...])  (B,), no leading 0
+# e.g. optical also carries a second row-space:
+# batch['sensor_offset'] = chunks/event, batch['sensor_wave_offset'] = samples/event
 ```
 
 `point_collate_fn` adds mix-up augmentation.
@@ -606,6 +645,17 @@ The deterministic split is keyed on a stable `(config_id, source_event_idx)`
 blake2b hash, so it is reproducible across machines and invariant to shard
 add/remove/reorder.
 
+### OpticalDataset
+
+PMT light (goop) as per-chunk waveforms. `schema='label'` reads the doraemon
+`event_NNN/label_K/{adc,offsets,t0_ns,pmt_id,pe_counts}` layout (group =
+interaction); `schema='east_west'` reads `light_output.h5`
+(`event_NNN/{east,west}/…`, group = side, files globbed `*.h5`). Single `sensor`
+modality. Per-chunk: `pmt_id`, `t0_ns`, `length`, `pe`, `instance` (group); the
+packed `adc` (ΣL,) is a second row-space. Key params: `data_root`,
+`dataset_name`, `schema`, `decode_digitization=True`, `max_len`. TPC truth
+(`tpc_*`) is left on disk.
+
 ### PILArNetH5Dataset
 
 Loads PILArNet-M directly from packed HDF5 (no per-event preprocessing). Key
@@ -630,16 +680,21 @@ ds = build_dataset(dict(type='JAXTPCDataset', data_root='...', modalities=('step
 src/pimm_data/
     jaxtpc.py          JAXTPCDataset
     lucid.py           LUCiDDataset
+    optical.py         OpticalDataset (PMT light, per-chunk waveforms; label/east_west)
     multimodal.py      MultiModalEventDataset (source-mixture + holdout wrapper)
     pilarnet.py        PILArNetH5Dataset (PILArNet-M h5)
-    readers/           Per-modality HDF5 readers
+    readers/           Per-modality HDF5 readers (incl. optical_sensor)
     _dataset_base.py   ShardEventDataset base + modality validation
     _joint_index.py    build_joint_index — cross-modality event alignment
-    transform.py       Compose, TRANSFORMS, Collect, ...
-    detector_transforms.py  ApplyToStream, PDGToSemantic, RemapSegment
+    _roles.py          per-part roles + role-driven batching primitives
+    transform.py       Compose, TRANSFORMS, Collect, Apply, MultiCrop, ...
+    detector_transforms.py  Apply/ApplyToModality, MultiCrop, AggregateSensorHits,
+                            SetupGraph/BuildNexus/Align, PDGToSemantic, RemapSegment
+    batch_ops.py       to_batched_coords, split_event (boundary helpers)
     collate.py         collate_fn, point_collate_fn, inseg_collate_fn
     builder.py         DATASETS, build_dataset
     utils/pdg.py       pdg_to_semantic(pdg, scheme)
+configs/               campaign data-loader recipes (see docs/CAMPAIGN.md)
 ```
 
 ## Tests
@@ -684,10 +739,14 @@ The canonical real LUCiD-format dataset at SLAC is the WAND SK-like sample —
   config_000018/  pile-up 2 × bomb
 ```
 
-Each `config_NNNNNN/` is a v3 root with `step/`, `sensor/`, `hits/`, `labl/`
-(`wc_*_NNNN.h5`, `format_version 5`) — point `LUCID_DATA_ROOT` straight at one
-config; no mirror or symlink staging is needed. (Per-config shard counts are
-regenerated over time, so they are not pinned here.)
+Each `config_NNNNNN/` is a v3 root with `sensor/`, `hits/`, `labl/`, and the 3D
+segments under **`edep/`** (`wc_edep_*.h5`). The LUCiD `sensor`/`hits` recipes
+point `LUCID_DATA_ROOT` straight at one config. The LUCiD **`step`** modality
+globs `step/wc_step_*`, which WAND does not ship — run
+`scripts/make_wand_step_mirror.sh` to build a symlink view exposing `edep` as
+`step/wc_step_*` (`/sdf/data/neutrino/omara/wand_sk_like_step/config_NNNNNN`),
+then point `step`/recon recipes there. (Per-config shard counts are regenerated
+over time, so they are not pinned here.)
 
 A parallel sweep across all 18 configs is available:
 

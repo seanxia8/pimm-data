@@ -38,6 +38,7 @@ straight to the decision log: `engagement_plan_transform_dataset_placement.md`
 
 | Doc | Class | One-liner |
 |---|---|---|
+| `REDESIGN.md` | **CANONICAL** | The current data-layer contract: flat-prefixed batch, per-part `_roles`, map→reduce→map, `Apply(on=)` / `Collect(modalities=)`, `MultiCrop`, two row-spaces. **Supersedes the streams/collate design in `impl/05` (streams were removed).** |
 | `CAMPAIGN.md` | **CANONICAL** | Cross-dataset challenge matrix (JAXTPC/LUCiD/Optical) — `dataset × task → (modalities, labels, transforms, Collect)` + config tracker. Consolidates LUCiD's `Tasks→files` and pimm's `Task→config`. |
 | `DESIGN.md` | **CANONICAL** | Authoritative design + decisions (the "why"). *Being written now; if briefly absent, it is still canonical.* |
 | `ROADMAP.md` | **CANONICAL** | Phased plan + sign-off checklist (the "what/when"). *Being written now; if briefly absent, still canonical.* |
@@ -46,7 +47,7 @@ straight to the decision log: `engagement_plan_transform_dataset_placement.md`
 | `impl/02_dataset_base.md` | **CANONICAL** | `MultiModalEventDataset` + `TestModeMixin`: selection, holdout, manifest cache, `event_identity`/`split` (D6–D9/D26/D27/D30/D36/D37/D40). |
 | `impl/03_readers.md` | **CANONICAL** | `read_meta(idx)→{source_event_idx, n_hits}` + `read_event` surfacing across the 8 readers (D10/D27/D40). |
 | `impl/04_label_decoration.md` | **CANONICAL** | `label_config` schema + generic `_decorate_from_labl` + per-detector `fk_resolver` (D20/D22/D28/D38). |
-| `impl/05_collate_streams_eval.md` | **CANONICAL** | Single-stream collate REPLACE, `Collect(stream=)`, the 4 multi-stream seams (NOT BUILT), eval rewire, repro (D19/D23/D24/D35/D39/D41). |
+| `impl/05_collate_streams_eval.md` | **SUPERSEDED by REDESIGN** | Single-stream collate, `Collect(stream=)`, multi-stream seams. The streams design was replaced by the flat-prefixed `_roles` contract — see `REDESIGN.md`. Eval/repro parts still apply. |
 | `impl/06_defork_rollout_packaging.md` | **CANONICAL** | De-fork rollout Steps 0–5, re-export shim, submodule/pin, config migration (D5/D17/D18/D32/D33). |
 | `impl/07_test_matrix_fixtures.md` | **CANONICAL** | Step-0 parity/determinism harness + `testing.py` fixture additions; the gate re-run before every flip (D33/D34/D41). |
 | `engagement_plan_transform_dataset_placement.md` **Part VIII** | **DECISION-SPINE** | The immutable, append-only decision log **D1–D48** — the record of record for every structural choice. |

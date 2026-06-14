@@ -107,6 +107,7 @@ per-segment Cherenkov (needs physics-key names); optical waveform model (TBD).
 |---|---|---|---|
 | JAXTPC (wire) | `/sdf/data/neutrino/omara/JAXTPC_Wire/test_00_00_02` | `sim_wire` | `run_0027575715` (per-run nested) |
 | LUCiD (WAND) | `/sdf/data/neutrino/cjesus/DORAEMON/WAND/SK_like/config_NNNNNN` | `wc` | `''` |
+| LUCiD step view | `/sdf/data/neutrino/omara/wand_sk_like_step/config_NNNNNN` | `wc` | `''` |
 | Optical (label) | `/sdf/data/neutrino/doraemon/optical_test_00_00_02` | `test_00_00_02_pixel` | `''` |
 
 `examples/toy_run.py` was run against these. Loaded + ran a toy model end-to-end:
@@ -115,10 +116,17 @@ config_000001); Optical interaction (**K=4836 chunks / 72.2M packed samples /
 24 interaction classes** on 2 real events). Real-data findings:
 - **JAXTPC `labl` absent** at that path → supervised JAXTPC seg can't load there
   (deferred anyway). Non-supervised JAXTPC works.
-- **LUCiD step↔`edep` dir mismatch:** the LUCiD step reader globs `step/wc_step_*`
-  but WAND ships `edep/wc_edep_*`. So LUCiD `step` recipes (ssl_step, seg_step,
-  recon) need either an `edep` dir-name option on the reader or a symlink. `sensor`
-  / `hits` recipes load WAND fine.
+- **DONE — LUCiD step↔`edep` via a symlink mirror:** the LUCiD step reader globs
+  `step/wc_step_*` but WAND ships `edep/wc_edep_*`.
+  `scripts/make_wand_step_mirror.sh` builds
+  `/sdf/data/neutrino/omara/wand_sk_like_step/config_NNNNNN/` with
+  `step/wc_step_*.h5 → cjesus …/edep/wc_edep_*.h5` (sensor/hits/labl dir-symlinked
+  through). LUCiD `ssl_step` / `seg_step` / `recon_sensor_to_step` now load REAL
+  WAND through this root (verified: ssl_step 4 global/12 local crops; recon
+  sensor=3263 + step=20628 pts). (Alternative, not taken: an `edep` dir-name
+  option on `LUCiDStepReader`.) NB: the older `/sdf/data/neutrino/omara/wand_sk_like`
+  mirror is **stale** — its `edep` points at a now-deleted cjesus `seg/`; use the
+  `_step` mirror above (or cjesus directly for sensor/hits).
 - Real WAND `MultiModalEventDataset` index build is **slow (minutes)** — event
   recipes are gated on a synthetic two-config fixture instead.
 

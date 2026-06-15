@@ -103,3 +103,25 @@ def test_optical_eastwest_recipe(optical_eastwest_data_root):
     # instance = side (0 east / 1 west)
     import numpy as np
     assert set(np.unique(b['sensor_instance'].numpy()).tolist()) <= {0, 1}
+
+
+def test_jaxtpc_sensor_dense_gpu_recipe(jaxtpc_data_root):
+    """Dense path: worker Collects sparse sensor COO; the gpu_transforms policy,
+    expanded with the dataset geometry, densifies + adds noise + digitizes
+    post-collate (run on CPU here) -> sensor_dense {plane_gid: (B, W, T)}."""
+    from pimm_data import build_sensor_gpu_stages
+    ns = runpy.run_path(os.path.join(_CONFIGS, 'jaxtpc/sensor_dense_gpu.py'))
+    spec = dict(copy.deepcopy(ns['data']['train']))
+    spec.update(data_root=jaxtpc_data_root, split='', dataset_name='sim')
+    ds = build_dataset(spec)
+    ds.get_data(0)                                  # populate reader geometry
+    geom = ds.plane_geometry()
+    batch = collate_fn([ds[0], ds[1]])
+    assert {'sensor_wire', 'sensor_time', 'sensor_value', 'sensor_plane_gid',
+            'sensor_offset'} <= {k for k in batch if k != '_roles'}
+    gpu = dict(ns['gpu_transforms']); gpu['device'] = 'cpu'   # CPU in the test
+    out = build_sensor_gpu_stages(geom, **gpu)(batch)
+    grids = out['sensor_dense']
+    assert isinstance(grids, dict) and len(grids) >= 1
+    for g in grids.values():
+        assert g.ndim == 3 and g.shape[0] == 2      # (B, n_wires, n_ticks)

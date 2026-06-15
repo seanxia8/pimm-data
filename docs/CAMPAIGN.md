@@ -40,6 +40,7 @@ Every challenge is `Dataset(modalities=…, labels=…) → transforms → Colle
 | 3D self-supervised (SSL) | `('step',)` | — | `MultiCrop` (global/local) | `global`/`local`: coord/origin_coord/feat | `configs/jaxtpc/ssl_step.py` | recipe ✓ |
 | Interaction classification/grouping | `('step',)` | `'interaction'` | `GridSample` | `step`: coord/segment | — | planned (jaxtpc supervised — deferred) |
 | Raw-readout SSL | `('sensor',)` | — | `MultiCrop` (no geom aug — index space) | `global`/`local`: coord/feat | `configs/jaxtpc/ssl_sensor.py` | recipe ✓ |
+| Sensor dense (densify + noise on GPU) | `('sensor',)` | — | worker: Collect sparse COO; **post-collate GPU**: ToDevice→Densify→AddNoise→Digitize (`gpu_transforms` → `build_sensor_gpu_stages`) | `sensor`: wire/time/value/plane_gid → `sensor_dense {gid:(B,W,T)}` | `configs/jaxtpc/sensor_dense_gpu.py` | recipe ✓ |
 | Instance seg on hits | `('hits',)` | `'cluster'` | `GridSample` | `hits`: coord/segment/instance | — | planned (jaxtpc supervised — deferred) |
 | sensor → step charge/energy recon | `('step','sensor')` | `'pdg'` (opt) | per-modality `Apply` | `sensor` in, `step` target | — | planned (jaxtpc supervised — deferred) |
 

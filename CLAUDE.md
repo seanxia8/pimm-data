@@ -44,8 +44,11 @@ readers/ (HDF5 → flat dict)  →  jaxtpc.py / lucid.py (flat → nested)  → 
    row-space** (`adc`, role `('instance','sensor_wave_offset')`) — see
    "Optical" below.
 3. **Transforms** (`transform.py`, `detector_transforms.py`) — Pointcept-
-   style registry of point-cloud augmentations. The pipeline ends with
-   `Collect`, which scopes to one modality and converts numpy → torch.
+   style registry of point-cloud augmentations. The pipeline's terminal
+   per-event transform is `Collect`, which scopes to one or more parts and
+   converts numpy → torch, emitting a **flat-prefixed** batch dict
+   (`step_coord`, `sensor_wire`, …) plus a `_roles` map. Anything after the
+   terminal `Collect` is the **post-collate tail** (see "Dense path" below).
 
 ### Registry pattern (vendored from mmcv/Pointcept)
 
@@ -60,23 +63,47 @@ imports modules in a specific order so the decorator side-effects run
 before anything reads the registry. Adding a new transform/dataset means
 both decorating it and importing the module from `__init__.py`.
 
-### Nested-dict output and `ApplyToStream` / `Collect`
+### Nested-dict output and `Apply` / `Collect`
 
 Datasets emit `{'step': {...}, 'sensor': {...}, 'hits': {...}, 'labl': {...}}`.
 There is **no bare `coord` at the top level**. Transforms that hardcode
-`'coord'`/`'segment'` must be wrapped:
+`'coord'`/`'segment'` must be scoped to a part with `Apply(on=…)` (a tuple
+`on=` shares one RNG draw across parts; `ApplyToStream`/`ApplyToModality`
+remain as back-compat aliases):
 
 ```python
-dict(type='ApplyToStream', stream='step', transforms=[
+dict(type='Apply', on='step', transforms=[
     dict(type='GridSample', grid_size=0.5, mode='train'),
 ])
 ```
 
-`Collect(stream='step', keys=[...], feat_keys=[...])` is the terminal
-transform: it pulls a flat dict out of one modality and converts arrays
-to torch tensors. **`Collect` must be last** — tensor output is required
-for `DataLoader(num_workers > 0)` to use file-descriptor IPC instead of
-pickling full arrays.
+`Collect(parts={'step': dict(keys=[...], feat_keys=[...])})` (or the
+single-part `Collect(part='step', keys=[...])`) is the terminal per-event
+transform: it pulls each named part into the flat-prefixed batch and
+converts arrays to torch tensors. **`Collect` must be last** in the
+per-event head — tensor output is required for `DataLoader(num_workers > 0)`
+to use file-descriptor IPC instead of pickling full arrays. (`parts=`/`part=`
+replaced `modalities=`/`modality=`, kept as deprecated aliases; the old
+`stream=` is gone.)
+
+### Dense path (post-collate tail, map → reduce → map)
+
+A single `transform` list is **split at the terminal `Collect`** by
+`ShardEventDataset._split_at_collect`: the head (`…, Collect`) is
+`dataset.transform` (runs per-event in DataLoader workers, sparse — only
+sparse crosses PCIe); the tail (everything after `Collect`) is
+`dataset.batch_transform`, which a trainer runs **per-batch after collate**
+(e.g. Lightning `on_after_batch_transfer`). `ToDevice(device=…)` opens the
+tail (the device step); then `Densify`/`AddNoise`/`Digitize` (single
+dispatching torch transforms — the `Batch*` variants were deleted) build
+the per-plane grids **on-device**. They take `geom=` (a config-derived
+plane registry via `geometry.load_plane_registry`, since real shards lack
+`n_wires` attrs) and `modality='sensor'`, run `scope='sample'`, and
+dispatch numpy (per-event sub-dict) vs torch (collated batch) on whether
+`<part>_offset` is present. Recipe: `configs/jaxtpc/sensor_dense_gpu.py`;
+bench/verify: `examples/bench_dense.py`. Coherent noise is self-contained
+in pimm-data (`noise.py` numpy oracle + `dense_ops._coherent_torch`;
+`coherent_numpy=True` opts back to the bit-exact oracle).
 
 ### Modality semantics and FK chain
 

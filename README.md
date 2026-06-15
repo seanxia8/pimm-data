@@ -548,6 +548,11 @@ LUCiD (`wc_*`) or JAXTPC (`sim_*`) v3 datasets via one code path
   contention scaling.
 * **`transcode_codec.py`** — re-encode production HDF5 between codecs
   (gzip → blosc/zstd/lz4) to compare file size and read speed.
+* **`examples/bench_dense.py`** — times the post-collate dense tail
+  (`Densify`→`AddNoise`→`Digitize`) CPU vs GPU (`ToDevice`) on real
+  JAXTPC_Wire data, and verifies the output bit-exact against a manual
+  numpy scatter and a device-independent numpy oracle (`coherent_numpy=True`).
+  Measured ~29× GPU speedup; only the sparse COO crosses PCIe.
 
 **Codec finding:** JAXTPC loading is bound by gzip **decompression**
 (CPU/GIL-serial — scales with worker *processes*, not threads), not

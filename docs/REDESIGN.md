@@ -274,11 +274,13 @@ transform = [
     dict(type='Apply', on='step', transforms=[
         dict(type='GridSample', grid_size=0.5, mode='train'),
         dict(type='RemapSegment', scheme='motif_5cls')]),
-    dict(type='Collect', namespaces=('step','sensor'), ...),     # last per-event map
+    dict(type='Collect', parts={'step': dict(keys=('coord','segment')),  # last per-event map
+                                'sensor': dict(keys=('wire','time','value','plane_gid'))}),
     # ── collate (reduce) ──
-    dict(type='ToDevice', device='cuda'),                         # opens per-batch segment
-    dict(type='Densify',  on='sensor'),                           # scope='sample'
-    dict(type='AddNoise', on='sensor'), dict(type='Digitize', on='sensor'),
+    dict(type='ToDevice', device='cuda'),                              # opens per-batch segment
+    dict(type='Densify',  geom=_geom, modality='sensor'),             # scope='sample'
+    dict(type='AddNoise', geom=_geom, modality='sensor', coherent=True),
+    dict(type='Digitize', geom=_geom, modality='sensor', n_bits=12),
 ]
 # -> {step_coord, step_segment, step_offset, sensor_wire, sensor_offset, sensor_dense, name, split}
 ```
@@ -487,14 +489,23 @@ relevant phase):
 - Producers: `SetupGraph` (self edges), `BuildNexus` (cross-store), `Align`
   (multi-task row alignment) — graph ops in **torch** (`cdist`/`topk`).
 - `index_operator` roles-aware self-edge remap (subsample/graph order-independent).
-- Dense path (`Densify/AddNoise/Digitize`) reads/writes flat `sensor_*`.
+- Dense path: `Densify`/`AddNoise`/`Digitize` are a single dispatching trio each
+  (the `Batch*` variants were deleted) — they take `geom=`/`modality=`, run
+  `scope='sample'` on flat `sensor_*`, and dispatch numpy (per-event sub-dict) vs
+  torch (post-collate batch) on whether `<part>_offset` is present.
+- One-list split / post-collate tail: a single `transform` list is split at the
+  terminal `Collect` (`ShardEventDataset._split_at_collect`) into
+  `dataset.transform` (per-event head) + `dataset.batch_transform` (the
+  `ToDevice`→`Densify`→`AddNoise`→`Digitize` tail a trainer runs post-collate,
+  e.g. `on_after_batch_transfer`). Recipe: `configs/jaxtpc/sensor_dense_gpu.py`;
+  bench `examples/bench_dense.py` (GPU ~29× CPU, bit-exact vs numpy oracle).
 - Helpers: `to_batched_coords`, `split_event`/`batch[i]`.
 
 **Deliberately deferred (not omissions):**
 - numpy `Densify/AddNoise/Digitize` still work as pre-collate transforms via `Apply`
   scoping (sub-dict); a flat `on=` rewrite is optional cleanup, not correctness.
-- One-list split / Lightning `on_after_batch_transfer` wiring: dense ops run via
-  `Compose` (`BatchTransformMixin`); auto-splitting a single config list at `Collect`
-  is trainer integration, not yet built.
+- Geom auto-injection: the dense tail still takes an explicit `geom=` (config-derived
+  registry); having the dataset fill its own `plane_geometry()` when `geom` is omitted
+  is a future nicety.
 - pimm-side config/model migration (nested→flat keys, `Apply(on=)`, `MultiCrop`) —
   pimm's repo, config-level (pimm calls pimm-data).

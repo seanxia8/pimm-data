@@ -6,13 +6,13 @@ There is **no batch-transform concept and no runner**: the dense ops are ordinar
 :class:`pimm_data.transform.Compose` (or any loop). The dense grids are born
 on-device; pass ``ToDevice('cpu')`` to run the same transforms on CPU.
 
-Registered transforms (all ``scope='sample'`` — per-event independent):
-
-* ``ToDevice``               — move the batch to a device (the device step)
-* ``BatchDensify``           — sparse ``<m>_wire/time/value/plane_gid/offset`` -> ``<m>_dense={gid:(B,W,T)}``
-* ``BatchAddIntrinsicNoise`` — fresh coherent (+optional incoherent) noise; **self-seeds**
-  from ``batch['name']`` (+ optional ``batch['_epoch']``/``_rank``) — no runner injects seeds
-* ``BatchDigitize``          — quantize to ADC codes
+``ToDevice`` is the device step. The dense ops — ``Densify`` / ``AddNoise`` /
+``Digitize`` (in :mod:`pimm_data.detector_transforms`, ``scope='sample'``) — are
+ONE class each that DISPATCH on input: a per-event sensor sub-dict (numpy,
+pre-collate) OR the flat collated batch (``<m>_wire/.../offset`` -> ``<m>_dense=
+{gid:(B,W,T)}``, torch, post-collate; born on the inputs' device, GPU after
+``ToDevice``). There is no separate ``Batch*`` version and no runner — noise
+self-seeds from ``batch['name']`` (+ optional ``batch['_epoch']``/``_rank``).
 
 Each is ``fn(batch) -> batch`` (flat-prefixed keys; ``modality=`` sets the prefix,
 ``None`` = bare). :func:`sensor_dense_cfg` returns the standard chain as config;
@@ -104,114 +104,11 @@ class ToDevice:
         return move_to_device(batch, self.device, non_blocking=self.non_blocking)
 
 
-@TRANSFORMS.register_module()
-class BatchDensify:
-    """Sparse hits -> per-plane dense grids ``batch[dense_key] = {gid: (B,W,T)}``."""
-
-    scope = 'sample'  # per-event independent; placed post-collate by cost
-
-    def __init__(self, geom, *, modality=None, wire_key='wire', time_key='time',
-                 value_key='value', plane_key='plane_gid', offset_key='offset',
-                 dense_key='dense'):
-        self.geom = geom
-        self.modality = modality
-        self.wire_key, self.time_key, self.value_key = wire_key, time_key, value_key
-        self.plane_key, self.offset_key, self.dense_key = plane_key, offset_key, dense_key
-
-    def __call__(self, batch):
-        # REDESIGN: flat-prefixed keys. modality=None → bare keys (`wire`, `dense`);
-        # modality='sensor' → flat `sensor_wire` … `sensor_dense`.
-        pfx = f'{self.modality}_' if self.modality is not None else ''
-        m = self.modality if self.modality is not None else '<bare batch>'
-        wire = batch[pfx + self.wire_key]
-        off = batch[pfx + self.offset_key]
-        n = wire.reshape(-1).shape[0]
-        # Clear signal for the #1 dense coupling: a coord-mutating transform on this
-        # part pre-collate desyncs the raw COO from offset.
-        if off.numel() and int(off[-1]) != n:
-            raise ValueError(
-                f"BatchDensify({m!r}): offset total {int(off[-1])} != {n} raw-COO "
-                f"rows ({pfx + self.wire_key!r}). A coord-mutating transform "
-                "(GridSample/SphereCrop/RandomDropout) ran on this part pre-collate "
-                "— densify needs the raw COO aligned with offset. Voxelize a SEPARATE "
-                "sparse view, not the one you densify.")
-        batch[pfx + self.dense_key] = dense_ops.densify(
-            wire, batch[pfx + self.time_key], batch[pfx + self.value_key],
-            batch[pfx + self.plane_key], off, self.geom)
-        return batch
-
-
-@TRANSFORMS.register_module()
-class BatchAddIntrinsicNoise:
-    """Add fresh per-event coherent (+optional incoherent) noise to the grids."""
-
-    scope = 'sample'  # per-event independent (per-event seed/elementwise)
-
-    def __init__(self, geom, *, modality=None, base_seed=0, coherent=True,
-                 incoherent=False, dense_key='dense', enc=DEFAULT_ENC,
-                 sampling_rate_hz=DEFAULT_SAMPLING_RATE_HZ,
-                 group_size=DEFAULT_GROUP_SIZE, coh_rms=DEFAULT_COH_RMS_ADC,
-                 coh_corner_freq_hz=DEFAULT_COH_CORNER_FREQ_HZ,
-                 coh_spectral_slope=DEFAULT_COH_SLOPE, beta=DEFAULT_COH_BETA,
-                 series_spectrum=None, coherent_numpy=False):
-        self.geom = geom
-        self.modality = modality
-        self.base_seed = int(base_seed)
-        self.coherent, self.incoherent = bool(coherent), bool(incoherent)
-        self.dense_key = dense_key
-        self.enc = tuple(enc)
-        # coherent_numpy=True opts into the bit-exact / device-independent numpy
-        # coherent oracle; default is the on-device torch port (device-specific).
-        self.kw = dict(sampling_rate_hz=sampling_rate_hz, group_size=group_size,
-                       coh_rms=coh_rms, coh_corner_freq_hz=coh_corner_freq_hz,
-                       coh_spectral_slope=coh_spectral_slope, beta=beta,
-                       series_spectrum=series_spectrum, coherent_numpy=coherent_numpy)
-
-    def __call__(self, batch):
-        # SELF-CONTAINED seeding: derive per-event seeds from batch['name'] here, so
-        # no runner needs to inject them — this transform is a plain fn(batch)->batch.
-        pfx = f'{self.modality}_' if self.modality is not None else ''
-        grids = batch[pfx + self.dense_key]
-        seeds = _seeds_for(batch, self.base_seed)
-        if seeds is None:                                  # no 'name' -> position fallback
-            seeds = [content_seed(f"_idx{i}", self.base_seed)
-                     for i in range(next(iter(grids.values())).shape[0])]
-        dense_ops.add_intrinsic_noise(
-            grids, self.geom, seeds=seeds, enc=self.enc,
-            coherent=self.coherent, incoherent=self.incoherent, **self.kw)
-        return batch
-
-
-@TRANSFORMS.register_module()
-class BatchDigitize:
-    """Quantize per-plane grids to ADC codes (pedestal from registry or override)."""
-
-    scope = 'sample'  # per-event independent (per-event seed/elementwise)
-
-    def __init__(self, geom=None, *, modality=None, pedestal=None, n_bits=12,
-                 adc_max=None, gain=1.0, dense_key='dense'):
-        self.geom = geom or {}
-        self.modality = modality
-        self.pedestal = pedestal
-        self.n_bits, self.adc_max, self.gain = n_bits, adc_max, gain
-        self.dense_key = dense_key
-
-    def __call__(self, batch):
-        pfx = f'{self.modality}_' if self.modality is not None else ''
-        ped = self.pedestal
-        if ped is None:
-            ped = {gid: e.get('pedestal', 0) for gid, e in self.geom.items()}
-        batch[pfx + self.dense_key] = dense_ops.digitize(
-            batch[pfx + self.dense_key], ped, n_bits=self.n_bits,
-            adc_max=self.adc_max, gain=self.gain)
-        return batch
-
-
 def sensor_dense_cfg(geom, *, modality='sensor', device=None, base_seed=0,
                      coherent=True, incoherent=False, digitize=True, n_bits=12,
                      dense_key=None, **noise_kw):
     """The standard dense sensor chain as plain ``dict(type=…)`` configs:
-    ``[ToDevice?, BatchDensify, BatchAddIntrinsicNoise, BatchDigitize?]``.
+    ``[ToDevice?, Densify, AddNoise, Digitize?]``.
 
     Run it with the ordinary ``Compose`` (these are ``scope='sample'`` transforms —
     there is **no batch-transform runner**): ``Compose([*sensor_dense_cfg(geom,
@@ -226,13 +123,13 @@ def sensor_dense_cfg(geom, *, modality='sensor', device=None, base_seed=0,
     cfg = []
     if device is not None:
         cfg.append(dict(type='ToDevice', device=device))
-    cfg.append(dict(type='BatchDensify', geom=geom, modality=modality,
+    cfg.append(dict(type='Densify', geom=geom, modality=modality,
                     dense_key=dense_key))
-    cfg.append(dict(type='BatchAddIntrinsicNoise', geom=geom, modality=modality,
+    cfg.append(dict(type='AddNoise', geom=geom, modality=modality,
                     base_seed=base_seed, coherent=coherent, incoherent=incoherent,
                     dense_key=dense_key, **noise_kw))
     if digitize:
-        cfg.append(dict(type='BatchDigitize', geom=geom, modality=modality,
+        cfg.append(dict(type='Digitize', geom=geom, modality=modality,
                         n_bits=n_bits, dense_key=dense_key))
     return cfg
 

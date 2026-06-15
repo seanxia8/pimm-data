@@ -559,8 +559,12 @@ class Densify:
         Sub-dict key to write. Default ``'dense'``.
     """
 
-    def __init__(self, fill=0.0, dtype='float32', on_pixel='raise',
-                 require_shape=True, dense_key='dense', assert_unique=True):
+    scope = 'sample'  # per-event independent; placeable pre- OR post-collate
+
+    def __init__(self, geom=None, *, modality=None, fill=0.0, dtype='float32',
+                 on_pixel='raise', require_shape=True, dense_key='dense',
+                 assert_unique=True, wire_key='wire', time_key='time',
+                 value_key='value', plane_key='plane_gid', offset_key='offset'):
         if on_pixel not in ('raise', 'skip'):
             raise ValueError(f"on_pixel must be 'raise' or 'skip', got {on_pixel!r}")
         self.fill = float(fill)
@@ -569,8 +573,21 @@ class Densify:
         self.require_shape = bool(require_shape)
         self.dense_key = dense_key
         self.assert_unique = bool(assert_unique)
+        # flat collated-batch path (post-collate, torch): geom + the flat COO keys.
+        self.geom = geom
+        self.modality = modality
+        self.wire_key, self.time_key, self.value_key = wire_key, time_key, value_key
+        self.plane_key, self.offset_key = plane_key, offset_key
 
-    def __call__(self, sub):
+    def __call__(self, data):
+        # DISPATCH: a post-collate collated batch carries the flat
+        # ``<mod>_offset`` key (added by Collect/collate); a per-event sensor
+        # sub-dict never does. Same op (scatter COO -> grid), scope='sample'
+        # either way; place it after ToDevice for the on-GPU path.
+        pfx = f'{self.modality}_' if self.modality is not None else ''
+        if (pfx + self.offset_key) in data:
+            return self._densify_batch(data)
+        sub = data
         if sub.get('readout_type') == 'pixel':
             if self.on_pixel == 'raise':
                 raise ValueError(
@@ -623,6 +640,29 @@ class Densify:
         sub[self.dense_key] = out
         return sub
 
+    def _densify_batch(self, batch):
+        """Post-collate path: scatter the flat collated COO (``<mod>_wire/.../offset``)
+        into per-plane grids ``<mod>_dense = {gid: (B, W, T)}`` via the torch scatter
+        in :mod:`dense_ops` — born on whatever device the inputs are on (GPU after
+        ToDevice). Same per-event-independent op as the sub-dict path."""
+        from . import dense_ops
+        pfx = f'{self.modality}_' if self.modality is not None else ''
+        m = self.modality if self.modality is not None else '<bare batch>'
+        wire = batch[pfx + self.wire_key]
+        off = batch[pfx + self.offset_key]
+        n = wire.reshape(-1).shape[0]
+        if off.numel() and int(off[-1]) != n:
+            raise ValueError(
+                f"Densify({m!r}): offset total {int(off[-1])} != {n} raw-COO rows "
+                f"({pfx + self.wire_key!r}). A coord-mutating transform "
+                "(GridSample/SphereCrop/RandomDropout) ran on this part pre-collate "
+                "— densify needs the raw COO aligned with offset. Voxelize a SEPARATE "
+                "sparse view, not the one you densify.")
+        batch[pfx + self.dense_key] = dense_ops.densify(
+            wire, batch[pfx + self.time_key], batch[pfx + self.value_key],
+            batch[pfx + self.plane_key], off, self.geom)
+        return batch
+
 
 @TRANSFORMS.register_module()
 class AddNoise:
@@ -645,12 +685,20 @@ class AddNoise:
     incoherent noise to noise-free input.
     """
 
+    scope = 'sample'  # per-event independent; placeable pre- OR post-collate
+
     def __init__(self, incoherent=False, coherent=True, group_size=64,
                  wire_lengths_m=None, enc=DEFAULT_ENC, series_spectrum=None,
                  sampling_rate_hz=DEFAULT_SAMPLING_RATE_HZ, coh_rms=2.5,
                  coh_corner_freq_hz=20000.0, coh_spectral_slope=1.5, beta=0.15,
-                 base_seed=0, dense_key='dense', planes=None, name_key='name'):
+                 base_seed=0, dense_key='dense', planes=None, name_key='name',
+                 geom=None, modality=None, coherent_numpy=False, offset_key='offset'):
         self.incoherent = bool(incoherent)
+        # flat collated-batch path (post-collate, torch): geom + flat dense key.
+        self.geom = geom
+        self.modality = modality
+        self.coherent_numpy = bool(coherent_numpy)
+        self.offset_key = offset_key
         self.coherent = bool(coherent)
         self.group_size = int(group_size)
         self.wire_lengths_m = wire_lengths_m
@@ -671,7 +719,13 @@ class AddNoise:
         seed = (int.from_bytes(h, 'little') ^ self.base_seed) & ((1 << 64) - 1)
         return np.random.default_rng(seed)
 
-    def __call__(self, sub):
+    def __call__(self, data):
+        # DISPATCH: a collated batch carries the flat <mod>_offset key (torch grids
+        # {gid:(B,W,T)}); a per-event sub-dict does not (numpy grids {gid:(W,T)}).
+        pfx = f'{self.modality}_' if self.modality is not None else ''
+        if (pfx + self.offset_key) in data:
+            return self._noise_batch(data, pfx)
+        sub = data
         if sub.get('readout_type') == 'pixel':
             return sub
         dense = sub.get(self.dense_key)
@@ -695,6 +749,26 @@ class AddNoise:
                 coh_spectral_slope=self.coh_spectral_slope, beta=self.beta)
             dense[label] = img + noise
         return sub
+
+    def _noise_batch(self, batch, pfx):
+        """Post-collate path: add fresh per-event noise to the collated grids
+        ``batch[<mod>_dense]`` (torch, on the inputs' device). Seeds self-derive
+        from ``batch['name']`` folded with base_seed/_epoch/_rank."""
+        from . import dense_ops
+        from .batch_transforms import _seeds_for, content_seed
+        grids = batch[pfx + self.dense_key]
+        seeds = _seeds_for(batch, self.base_seed)
+        if seeds is None:                              # no 'name' -> position fallback
+            seeds = [content_seed(f"_idx{i}", self.base_seed)
+                     for i in range(next(iter(grids.values())).shape[0])]
+        dense_ops.add_intrinsic_noise(
+            grids, self.geom, seeds=seeds, enc=self.enc,
+            coherent=self.coherent, incoherent=self.incoherent,
+            sampling_rate_hz=self.sampling_rate_hz, group_size=self.group_size,
+            coh_rms=self.coh_rms, coh_corner_freq_hz=self.coh_corner_freq_hz,
+            coh_spectral_slope=self.coh_spectral_slope, beta=self.beta,
+            series_spectrum=self.series_spectrum, coherent_numpy=self.coherent_numpy)
+        return batch
 
 
 @TRANSFORMS.register_module()
@@ -732,8 +806,11 @@ class Digitize:
         Restrict to these plane labels (None → all dense planes).
     """
 
+    scope = 'sample'  # per-event independent; placeable pre- OR post-collate
+
     def __init__(self, n_bits=12, adc_max=None, gain=1.0, pedestal=None,
-                 require_pedestal=False, dense_key='dense', planes=None):
+                 require_pedestal=False, dense_key='dense', planes=None,
+                 geom=None, modality=None, offset_key='offset'):
         self.n_bits = int(n_bits)
         self.adc_max = adc_max
         self.gain = float(gain)
@@ -741,6 +818,9 @@ class Digitize:
         self.require_pedestal = bool(require_pedestal)
         self.dense_key = dense_key
         self.planes = planes
+        self.geom = geom or {}
+        self.modality = modality
+        self.offset_key = offset_key
 
     def _pedestal_for(self, label, sub):
         if isinstance(self.pedestal, dict):
@@ -757,7 +837,13 @@ class Digitize:
                 "the reader (sensor file pedestal attr) or pass pedestal=.")
         return 0.0
 
-    def __call__(self, sub):
+    def __call__(self, data):
+        # DISPATCH: collated batch (flat <mod>_offset present) -> torch path;
+        # per-event sub-dict otherwise.
+        pfx = f'{self.modality}_' if self.modality is not None else ''
+        if (pfx + self.offset_key) in data:
+            return self._digitize_batch(data, pfx)
+        sub = data
         if sub.get('readout_type') == 'pixel':
             return sub
         dense = sub.get(self.dense_key)
@@ -779,3 +865,16 @@ class Digitize:
                                     adc_max=self.adc_max, gain=self.gain)
         sub[marker] = True
         return sub
+
+    def _digitize_batch(self, batch, pfx):
+        """Post-collate path: quantize the collated grids ``batch[<mod>_dense]``
+        (torch, on the inputs' device) via dense_ops. Pedestal: the ``pedestal``
+        arg wins, else per-plane from ``geom``."""
+        from . import dense_ops
+        ped = self.pedestal
+        if ped is None:
+            ped = {gid: e.get('pedestal', 0) for gid, e in self.geom.items()}
+        batch[pfx + self.dense_key] = dense_ops.digitize(
+            batch[pfx + self.dense_key], ped, n_bits=self.n_bits,
+            adc_max=self.adc_max, gain=self.gain)
+        return batch

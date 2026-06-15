@@ -199,7 +199,7 @@ file-descriptor sharing, not pickling.
   offset-only path; this lives in one place, not every model.
 - **`batch[i]` / `split_event(batch, i)`** — one event, with all index columns
   **rebased** to that event. Hand-rolled index-rebasing is the #1 bug source; ship it.
-- **`content_seed(name, …)`** — `BatchAddIntrinsicNoise` SELF-seeds per event from
+- **`content_seed(name, …)`** — `AddNoise` SELF-seeds per event from
   `batch['name']` (no runner injects seeds).
 
 ---
@@ -487,7 +487,7 @@ relevant phase):
 - Producers: `SetupGraph` (self edges), `BuildNexus` (cross-store), `Align`
   (multi-task row alignment) — graph ops in **torch** (`cdist`/`topk`).
 - `index_operator` roles-aware self-edge remap (subsample/graph order-independent).
-- Dense path (`BatchDensify/AddNoise/Digitize`) reads/writes flat `sensor_*`.
+- Dense path (`Densify/AddNoise/Digitize`) reads/writes flat `sensor_*`.
 - Helpers: `to_batched_coords`, `split_event`/`batch[i]`.
 
 **Deliberately deferred (not omissions):**

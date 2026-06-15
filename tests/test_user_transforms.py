@@ -4,14 +4,17 @@ A user writes ONE dict->dict callable and places it in the SAME Compose, pre- or
 post-collate — there is no separate batch-transform runner. These tests lock that
 Compose runs bare callables and the dense ops (scope='sample'), and that the
 scope='batch' fence still catches a genuine cross-sample transform pre-collate.
+
+The dense ops are the single Densify/AddNoise/Digitize (no Batch* versions) — one
+class each that dispatches on input (per-event sub-dict vs collated flat batch).
 """
 import numpy as np
 import pytest
 import torch
 
 from pimm_data.transform import Compose
-from pimm_data.batch_transforms import (BatchDensify, BatchAddIntrinsicNoise,
-                                        BatchDigitize, ToDevice)
+from pimm_data.batch_transforms import ToDevice
+from pimm_data.detector_transforms import Densify, AddNoise, Digitize
 
 
 def test_precollate_bare_callable():
@@ -43,10 +46,10 @@ def test_postcollate_bare_callable_in_compose():
 def test_dense_ops_are_scope_sample_and_compose():
     """densify/noise/digitize are scope='sample' (per-single) -> run in a plain
     Compose alongside ToDevice (the fence does NOT block them)."""
-    for cls in (ToDevice, BatchDensify, BatchAddIntrinsicNoise, BatchDigitize):
+    for cls in (ToDevice, Densify, AddNoise, Digitize):
         assert getattr(cls, 'scope', None) == 'sample'
     Compose([dict(type='ToDevice', device='cpu'),
-             dict(type='BatchDensify', geom={}, modality='sensor')])   # no fence error
+             dict(type='Densify', geom={}, modality='sensor')])   # no fence error
 
 
 def test_compose_rejects_genuine_scope_batch():
@@ -71,11 +74,10 @@ def _tiny_sensor_batch():
 
 
 def test_densify_default_key_is_neutral_dense():
-    """BatchDensify writes the neutral 'dense' key — NO 'sensor_dense', and it works
-    for ANY modality (densify isn't sensor-specific). Bare batch -> batch['dense']."""
-    from pimm_data.batch_transforms import BatchDensify
+    """Densify (collated-batch path) writes the neutral 'dense' key — NO
+    'sensor_dense' for a bare batch, and it works for ANY modality."""
     geom = {0: {'n_wires': 4, 'n_ticks': 5}}
-    out = BatchDensify(geom)(_tiny_sensor_batch())          # bare, no dense_key=
+    out = Densify(geom)(_tiny_sensor_batch())               # bare, no dense_key=
     assert 'dense' in out and 'sensor_dense' not in out
     assert out['dense'][0].shape == (2, 4, 5)
 
@@ -87,21 +89,17 @@ def _flat_sensor_batch(**override):
 
 
 def test_densify_namespaced_default_lands_in_flat_dense():
-    """REDESIGN: modality='sensor' reads FLAT sensor_* keys and writes sensor_dense
-    (flat-prefixed), not a nested batch['sensor']['dense']."""
-    from pimm_data.batch_transforms import BatchDensify
+    """modality='sensor' reads FLAT sensor_* keys and writes sensor_dense."""
     geom = {0: {'n_wires': 4, 'n_ticks': 5}}
-    out = BatchDensify(geom, modality='sensor')(_flat_sensor_batch())   # no dense_key=
+    out = Densify(geom, modality='sensor')(_flat_sensor_batch())   # no dense_key=
     assert 'sensor_dense' in out and out['sensor_dense'][0].shape == (2, 4, 5)
     assert 'dense' not in out                               # not bare
 
 
 def test_densify_coord_mutation_coupling_is_loud():
     """The #1 dense coupling: a coord-mutating transform desyncs the COO from
-    offset. BatchDensify names the modality and the fix — clearer than the
-    generic dense_ops guard."""
-    from pimm_data.batch_transforms import BatchDensify
+    offset. Densify names the modality and the fix."""
     geom = {0: {'n_wires': 4, 'n_ticks': 5}}
     batch = _flat_sensor_batch(offset=torch.tensor([1, 2]))   # total 2 != 3 COO rows
-    with pytest.raises(ValueError, match=r"BatchDensify\('sensor'\).*coord-mutating"):
-        BatchDensify(geom, modality='sensor')(batch)
+    with pytest.raises(ValueError, match=r"Densify\('sensor'\).*coord-mutating"):
+        Densify(geom, modality='sensor')(batch)
